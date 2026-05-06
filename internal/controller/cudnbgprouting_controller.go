@@ -1,0 +1,206 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package controller
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
+
+	networkingv1alpha1 "github.com/openshift/cudn-bgp-routing-operator/api/v1alpha1"
+)
+
+// +kubebuilder:rbac:groups=networking.openshift.io,resources=cudnbgproutings,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=networking.openshift.io,resources=cudnbgproutings/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=networking.openshift.io,resources=cudnbgproutings/finalizers,verbs=update
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=k8s.ovn.org,resources=clusteruserdefinednetworks,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=k8s.ovn.org,resources=routeadvertisements,verbs=get;list;watch;create;update;patch;delete
+
+type CUDNBgpRoutingReconciler struct {
+	client.Client
+	Scheme *runtime.Scheme
+}
+
+func (r *CUDNBgpRoutingReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	routing := &networkingv1alpha1.CUDNBgpRouting{}
+	if err := r.Get(ctx, req.NamespacedName, routing); err != nil {
+		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	if !routing.DeletionTimestamp.IsZero() {
+		return r.reconcileDelete(ctx, routing)
+	}
+
+	if !controllerutil.ContainsFinalizer(routing, RoutingFinalizerName) {
+		controllerutil.AddFinalizer(routing, RoutingFinalizerName)
+		if err := r.Update(ctx, routing); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	routing.Status.Phase = networkingv1alpha1.PhaseConfiguring
+	routing.Status.ObservedGeneration = routing.Generation
+
+	// Pre-check: spec.network.name must be unique across all CUDNBgpRouting CRs
+	routingList := &networkingv1alpha1.CUDNBgpRoutingList{}
+	if err := r.List(ctx, routingList); err != nil {
+		return ctrl.Result{}, err
+	}
+	for i := range routingList.Items {
+		other := &routingList.Items[i]
+		if other.Name != routing.Name && other.Spec.Network.Name == routing.Spec.Network.Name {
+			return r.setDegraded(ctx, routing, networkingv1alpha1.ConditionCUDNCreated,
+				"DuplicateNetwork",
+				fmt.Sprintf("spec.network.name %q already claimed by CUDNBgpRouting %q", routing.Spec.Network.Name, other.Name))
+		}
+	}
+
+	// Pre-check: CUDNBgpConfig must exist and be Ready
+	bgpConfig := &networkingv1alpha1.CUDNBgpConfig{}
+	if err := r.Get(ctx, types.NamespacedName{Name: "cluster"}, bgpConfig); err != nil {
+		routing.Status.Phase = networkingv1alpha1.PhasePending
+		if err := r.Status().Update(ctx, routing); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("CUDNBgpConfig 'cluster' not found, requeueing")
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+	if bgpConfig.Status.Phase != networkingv1alpha1.PhaseReady {
+		routing.Status.Phase = networkingv1alpha1.PhasePending
+		if err := r.Status().Update(ctx, routing); err != nil {
+			return ctrl.Result{}, err
+		}
+		log.Info("CUDNBgpConfig not Ready, requeueing", "phase", bgpConfig.Status.Phase)
+		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	// Phase 1: Create Namespace + CUDN
+	log.Info("Phase 1: ensuring namespace and CUDN", "network", routing.Spec.Network.Name)
+	if err := EnsureNamespace(ctx, r.Client, routing.Spec.Network.Name); err != nil {
+		return r.setDegraded(ctx, routing, networkingv1alpha1.ConditionCUDNCreated,
+			"NamespaceFailed", fmt.Sprintf("failed to ensure namespace: %v", err))
+	}
+	if err := EnsureCUDN(ctx, r.Client, routing); err != nil {
+		return r.setDegraded(ctx, routing, networkingv1alpha1.ConditionCUDNCreated,
+			"CUDNFailed", fmt.Sprintf("failed to ensure CUDN: %v", err))
+	}
+	meta.SetStatusCondition(&routing.Status.Conditions, metav1.Condition{
+		Type:               networkingv1alpha1.ConditionCUDNCreated,
+		Status:             metav1.ConditionTrue,
+		Reason:             "Created",
+		Message:            fmt.Sprintf("Namespace %q and CUDN %q%s ensured", routing.Spec.Network.Name, CUDNNamePrefix+routing.Spec.Network.Name, ""),
+		ObservedGeneration: routing.Generation,
+	})
+
+	// Phase 2: Ensure shared RouteAdvertisements
+	log.Info("Phase 2: ensuring RouteAdvertisements")
+	if err := EnsureRouteAdvertisements(ctx, r.Client); err != nil {
+		return r.setDegraded(ctx, routing, networkingv1alpha1.ConditionRouteAdvertisementsCreated,
+			"RAFailed", fmt.Sprintf("failed to ensure RouteAdvertisements: %v", err))
+	}
+	meta.SetStatusCondition(&routing.Status.Conditions, metav1.Condition{
+		Type:               networkingv1alpha1.ConditionRouteAdvertisementsCreated,
+		Status:             metav1.ConditionTrue,
+		Reason:             "Created",
+		Message:            "Shared RouteAdvertisements ensured",
+		ObservedGeneration: routing.Generation,
+	})
+
+	routing.Status.Phase = networkingv1alpha1.PhaseReady
+	if err := r.Status().Update(ctx, routing); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	log.Info("reconciliation complete", "phase", routing.Status.Phase)
+	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+}
+
+func (r *CUDNBgpRoutingReconciler) reconcileDelete(ctx context.Context, routing *networkingv1alpha1.CUDNBgpRouting) (ctrl.Result, error) {
+	log := logf.FromContext(ctx)
+
+	// Delete CUDN (namespace is left intact)
+	log.Info("deleting CUDN", "network", routing.Spec.Network.Name)
+	if err := DeleteCUDN(ctx, r.Client, routing.Spec.Network.Name); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	// Delete shared RouteAdvertisements only if this is the last CUDNBgpRouting
+	routingList := &networkingv1alpha1.CUDNBgpRoutingList{}
+	if err := r.List(ctx, routingList); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	remaining := 0
+	for i := range routingList.Items {
+		if routingList.Items[i].Name != routing.Name {
+			remaining++
+		}
+	}
+
+	if remaining == 0 {
+		log.Info("last CUDNBgpRouting, deleting shared RouteAdvertisements")
+		if err := DeleteRouteAdvertisements(ctx, r.Client); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	controllerutil.RemoveFinalizer(routing, RoutingFinalizerName)
+	if err := r.Update(ctx, routing); err != nil {
+		return ctrl.Result{}, err
+	}
+
+	log.Info("finalizer removed, deletion complete")
+	return ctrl.Result{}, nil
+}
+
+func (r *CUDNBgpRoutingReconciler) setDegraded(
+	ctx context.Context,
+	routing *networkingv1alpha1.CUDNBgpRouting,
+	condType, reason, message string,
+) (ctrl.Result, error) {
+	routing.Status.Phase = networkingv1alpha1.PhaseDegraded
+	meta.SetStatusCondition(&routing.Status.Conditions, metav1.Condition{
+		Type:               condType,
+		Status:             metav1.ConditionFalse,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: routing.Generation,
+	})
+	if err := r.Status().Update(ctx, routing); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, fmt.Errorf("%s: %s", reason, message)
+}
+
+func (r *CUDNBgpRoutingReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	return ctrl.NewControllerManagedBy(mgr).
+		For(&networkingv1alpha1.CUDNBgpRouting{}).
+		Named("cudnbgprouting").
+		Complete(r)
+}

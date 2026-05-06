@@ -1,0 +1,96 @@
+apiVersion: operators.coreos.com/v1alpha1
+kind: ClusterServiceVersion
+metadata:
+  annotations:
+    alm-examples: |-
+      [
+        {
+          "apiVersion": "networking.openshift.io/v1alpha1",
+          "kind": "CUDNBgpConfig",
+          "metadata": {"name": "cluster"},
+          "spec": {
+            "bgp": {
+              "localASN": 65001,
+              "livenessDetection": "bgp-keepalive",
+              "availabilityZones": [
+                {
+                  "nodeSelector": {"bgp_router_subnet": "1"},
+                  "neighbors": [
+                    {"address": "10.0.1.47", "remoteASN": 64512},
+                    {"address": "10.0.1.183", "remoteASN": 64512}
+                  ]
+                }
+              ]
+            },
+            "routerNodeSelector": {"bgp_router": "true"}
+          }
+        },
+        {
+          "apiVersion": "networking.openshift.io/v1alpha1",
+          "kind": "CUDNBgpRouting",
+          "metadata": {"name": "prod"},
+          "spec": {
+            "network": {"name": "prod", "subnet": "10.100.0.0/16", "topology": "Layer2"}
+          }
+        }
+      ]
+    capabilities: Basic Install
+    categories: Networking
+    containerImage: controller:latest
+    description: Automates L3 direct routing between CUDN Pod networks and AWS VPC networks via BGP on OpenShift (ROSA HCP).
+    operatorframework.io/suggested-namespace: openshift-cudn-bgp-routing
+  name: cudn-bgp-routing-operator.v0.1.0
+  namespace: placeholder
+spec:
+  apiservicedefinitions: {}
+  customresourcedefinitions:
+    owned:
+      - description: Singleton cluster-scoped BGP infrastructure configuration.
+        displayName: CUDN BGP Config
+        kind: CUDNBgpConfig
+        name: cudnbgpconfigs.networking.openshift.io
+        version: v1alpha1
+      - description: Declares a single CUDN network to create and advertise via BGP.
+        displayName: CUDN BGP Routing
+        kind: CUDNBgpRouting
+        name: cudnbgproutings.networking.openshift.io
+        version: v1alpha1
+    required:
+      - description: FRR-K8s BGP configuration.
+        displayName: FRR Configuration
+        kind: FRRConfiguration
+        name: frrconfigurations.frrk8s.metallb.io
+        version: v1beta1
+      - description: OVN Cluster User Defined Network.
+        displayName: Cluster User Defined Network
+        kind: ClusterUserDefinedNetwork
+        name: clusteruserdefinednetworks.k8s.ovn.org
+        version: v1
+  description: |
+    CUDN BGP Routing Operator automates L3 direct routing between
+    Cluster User Defined Networks (CUDN) and AWS VPC networks via BGP
+    on OpenShift (ROSA HCP). It replaces manual in-cluster configuration
+    steps by reconciling FRRConfiguration, ClusterUserDefinedNetwork,
+    Namespace, and RouteAdvertisements resources from two simple CRs.
+  displayName: CUDN BGP Routing Operator
+  icon:
+    - base64data: ""
+      mediatype: image/png
+  install:
+    spec:
+      deployments: null
+    strategy: deployment
+  installModes:
+    - supported: true
+      type: OwnNamespace
+    - supported: true
+      type: SingleNamespace
+    - supported: false
+      type: MultiNamespace
+    - supported: false
+      type: AllNamespaces
+  maturity: alpha
+  minKubeVersion: 1.31.0
+  provider:
+    name: Red Hat
+  version: 0.1.0

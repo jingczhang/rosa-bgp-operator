@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- networking_v1alpha1_cudnbgpconfig.yaml
+- networking_v1alpha1_cudnbgprouting.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

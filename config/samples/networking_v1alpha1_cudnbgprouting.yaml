@@ -1,0 +1,9 @@
+apiVersion: networking.openshift.io/v1alpha1
+kind: CUDNBgpRouting
+metadata:
+  name: prod
+spec:
+  network:
+    name: prod                       # matches PoC ClusterUserDefinedNetwork "cluster-udn-prod"
+    subnet: 10.100.0.0/16
+    topology: Layer2

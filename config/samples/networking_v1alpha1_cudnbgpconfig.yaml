@@ -1,0 +1,33 @@
+apiVersion: networking.openshift.io/v1alpha1
+kind: CUDNBgpConfig
+metadata:
+  name: cluster
+spec:
+  bgp:
+    localASN: 65001                  # terraform output rosa_bgp_asn
+    livenessDetection: bgp-keepalive # bfd | bgp-keepalive (default)
+    availabilityZones:
+      - nodeSelector:
+          bgp_router_subnet: "1"
+        neighbors:
+          - address: 10.0.1.47       # terraform output vpc1-rs1-subnet1-ep1_ip
+            remoteASN: 64512         # terraform output vpc1-rs1-asn
+          - address: 10.0.1.183      # terraform output vpc1-rs1-subnet1-ep2_ip
+            remoteASN: 64512
+      - nodeSelector:
+          bgp_router_subnet: "2"
+        neighbors:
+          - address: 10.0.2.91       # terraform output vpc1-rs1-subnet2-ep1_ip
+            remoteASN: 64512
+          - address: 10.0.2.204      # terraform output vpc1-rs1-subnet2-ep2_ip
+            remoteASN: 64512
+      - nodeSelector:
+          bgp_router_subnet: "3"
+        neighbors:
+          - address: 10.0.3.62       # terraform output vpc1-rs1-subnet3-ep1_ip
+            remoteASN: 64512
+          - address: 10.0.3.178      # terraform output vpc1-rs1-subnet3-ep2_ip
+            remoteASN: 64512
+
+  routerNodeSelector:
+    bgp_router: "true"
