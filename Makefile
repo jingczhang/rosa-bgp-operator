@@ -28,8 +28,8 @@ BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
 # This variable is used to construct full image tags for bundle and catalog images.
 #
 # For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
-# openshift.io/rosa-bgp-operator-bundle:$VERSION and openshift.io/rosa-bgp-operator-catalog:$VERSION.
-IMAGE_TAG_BASE ?= openshift.io/rosa-bgp-operator
+# openshift.io/openshift-cudn-bgp-routing-bundle:$VERSION and openshift.io/openshift-cudn-bgp-routing-catalog:$VERSION.
+IMAGE_TAG_BASE ?= openshift.io/openshift-cudn-bgp-routing
 
 # BUNDLE_IMG defines the image:tag used for the bundle.
 # You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
@@ -109,37 +109,22 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: test
-test: manifests generate fmt vet setup-envtest ## Run tests.
-	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
+test: manifests generate fmt vet setup-envtest ## Run platform-independent unit tests.
+	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" go test ./internal/controller/... ./api/... ./cmd/... -coverprofile cover.out
 
-# TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
-# The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
-# CertManager is installed by default; skip with:
-# - CERT_MANAGER_INSTALL_SKIP=true
-KIND_CLUSTER ?= rosa-bgp-operator-test-e2e
-
-.PHONY: setup-test-e2e
-setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
-	@command -v $(KIND) >/dev/null 2>&1 || { \
-		echo "Kind is not installed. Please install Kind manually."; \
-		exit 1; \
-	}
-	@case "$$($(KIND) get clusters)" in \
-		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
-	esac
+.PHONY: test-aws
+test-aws: ## Run AWS platform unit tests (mocked, no credentials needed).
+	go test ./internal/platform/aws/... -v -count=1
 
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND_CLUSTER=$(KIND_CLUSTER) go test ./test/e2e/ -v -ginkgo.v
-	$(MAKE) cleanup-test-e2e
+test-e2e: ## Run shared e2e tests (requires oc login to cluster).
+	go test ./test/e2e/ -v -timeout 2m -count=1
 
-.PHONY: cleanup-test-e2e
-cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
-	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+.PHONY: test-e2e-aws
+test-e2e-aws: ## Run AWS e2e tests (requires cluster + AWS credentials secret). Usage: make test-e2e-aws <profile>
+	$(eval E2E_PROFILE := $(filter-out $@,$(MAKECMDGOALS)))
+	@[ -n "$(E2E_PROFILE)" ] || { echo "Usage: make test-e2e-aws <profile-name>"; exit 1; }
+	E2E_PROFILE=$(E2E_PROFILE) go test ./test/e2e/aws/ -v -timeout 30m -count=1
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -185,10 +170,10 @@ PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
 docker-buildx: ## Build and push docker image for the manager for cross-platform support
 	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
 	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
-	- $(CONTAINER_TOOL) buildx create --name rosa-bgp-operator-builder
-	$(CONTAINER_TOOL) buildx use rosa-bgp-operator-builder
+	- $(CONTAINER_TOOL) buildx create --name openshift-cudn-bgp-routing-builder
+	$(CONTAINER_TOOL) buildx use openshift-cudn-bgp-routing-builder
 	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
-	- $(CONTAINER_TOOL) buildx rm rosa-bgp-operator-builder
+	- $(CONTAINER_TOOL) buildx rm openshift-cudn-bgp-routing-builder
 	rm Dockerfile.cross
 
 .PHONY: build-installer
@@ -229,7 +214,6 @@ $(LOCALBIN):
 
 ## Tool Binaries
 KUBECTL ?= kubectl
-KIND ?= kind
 KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
@@ -360,3 +344,7 @@ catalog-build: opm ## Build a catalog image.
 .PHONY: catalog-push
 catalog-push: ## Push a catalog image.
 	$(MAKE) docker-push IMG=$(CATALOG_IMG)
+
+# Catch-all so positional args (e.g. make test-e2e-aws my-cluster) don't error.
+%:
+	@:

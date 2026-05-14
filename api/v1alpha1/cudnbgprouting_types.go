@@ -20,23 +20,14 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// +kubebuilder:validation:Enum=Layer2;Layer3
-type TopologyType string
-
-const (
-	TopologyLayer2 TopologyType = "Layer2"
-	TopologyLayer3 TopologyType = "Layer3"
-)
-
 const (
 	ConditionCUDNCreated                = "CUDNCreated"
 	ConditionRouteAdvertisementsCreated = "RouteAdvertisementsCreated"
 )
 
 type NetworkConfig struct {
-	Name     string       `json:"name"`
-	Subnet   string       `json:"subnet"`
-	Topology TopologyType `json:"topology"`
+	Name   string `json:"name"`
+	Subnet string `json:"subnet"`
 }
 
 type CUDNBgpRoutingSpec struct {

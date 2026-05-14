@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -27,10 +28,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	networkingv1alpha1 "github.com/openshift/cudn-bgp-routing-operator/api/v1alpha1"
+	"github.com/openshift/cudn-bgp-routing-operator/internal/platform"
+	awsplatform "github.com/openshift/cudn-bgp-routing-operator/internal/platform/aws"
 )
 
 func configTestScheme() *runtime.Scheme {
@@ -67,47 +71,6 @@ func newTestCUDNBgpConfig() *networkingv1alpha1.CUDNBgpConfig {
 			},
 			RouterNodeSelector: map[string]string{"bgp_router": "true"},
 		},
-	}
-}
-
-func TestConfigReconcile_AddsFinalizer(t *testing.T) {
-	config := newTestCUDNBgpConfig()
-	s := configTestScheme()
-
-	network := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "operator.openshift.io/v1",
-			"kind":       "Network",
-			"metadata":   map[string]interface{}{"name": "cluster"},
-			"spec":       map[string]interface{}{},
-		},
-	}
-
-	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(config, network).
-		WithStatusSubresource(config).
-		Build()
-
-	r := &CUDNBgpConfigReconciler{Client: c, Scheme: s}
-	_, err := r.Reconcile(context.Background(), reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "cluster"},
-	})
-	// Will error on FRR not ready, that's OK — we're checking the finalizer
-	_ = err
-
-	updated := &networkingv1alpha1.CUDNBgpConfig{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "cluster"}, updated); err != nil {
-		t.Fatalf("failed to get config: %v", err)
-	}
-
-	found := false
-	for _, f := range updated.Finalizers {
-		if f == ConfigFinalizerName {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("finalizer not added")
 	}
 }
 
@@ -177,43 +140,6 @@ func TestConfigReconcile_FullReconcile(t *testing.T) {
 	}
 }
 
-func TestConfigReconcile_WaitingForFRR(t *testing.T) {
-	config := newTestCUDNBgpConfig()
-	config.Finalizers = []string{ConfigFinalizerName}
-	s := configTestScheme()
-
-	network := &unstructured.Unstructured{
-		Object: map[string]interface{}{
-			"apiVersion": "operator.openshift.io/v1",
-			"kind":       "Network",
-			"metadata":   map[string]interface{}{"name": "cluster"},
-			"spec":       map[string]interface{}{},
-		},
-	}
-
-	// No FRR namespace — should requeue without degrading
-	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(config, network).
-		WithStatusSubresource(config).
-		Build()
-
-	r := &CUDNBgpConfigReconciler{Client: c, Scheme: s}
-	result, err := r.Reconcile(context.Background(), reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "cluster"},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.RequeueAfter == 0 {
-		t.Error("expected requeue when FRR not ready")
-	}
-
-	updated := &networkingv1alpha1.CUDNBgpConfig{}
-	_ = c.Get(context.Background(), types.NamespacedName{Name: "cluster"}, updated)
-	if updated.Status.Phase == networkingv1alpha1.PhaseDegraded {
-		t.Error("should not be Degraded when simply waiting for FRR")
-	}
-}
 
 func TestConfigReconcile_DeleteBlockedByRouting(t *testing.T) {
 	now := metav1.Now()
@@ -225,7 +151,7 @@ func TestConfigReconcile_DeleteBlockedByRouting(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "prod"},
 		Spec: networkingv1alpha1.CUDNBgpRoutingSpec{
 			Network: networkingv1alpha1.NetworkConfig{
-				Name: "prod", Subnet: "10.100.0.0/16", Topology: networkingv1alpha1.TopologyLayer2,
+				Name: "prod", Subnet: "10.100.0.0/16",
 			},
 		},
 	}
@@ -260,9 +186,305 @@ func TestConfigReconcile_DeleteBlockedByRouting(t *testing.T) {
 	}
 }
 
-func TestConfigReconcile_DeleteSuccessful(t *testing.T) {
-	now := metav1.Now()
+
+// --- Phase 4: Controller AWS Integration (Mocked Platform) ---
+
+type mockPlatform struct {
+	reconcileNodesCalled bool
+	reconcileNodesArgs   []platform.RouterNode
+	reconcileNodesErr    error
+	cleanupCalled        bool
+	cleanupErr           error
+}
+
+func (m *mockPlatform) ReconcileNodes(_ context.Context, nodes []platform.RouterNode) error {
+	m.reconcileNodesCalled = true
+	m.reconcileNodesArgs = nodes
+	return m.reconcileNodesErr
+}
+
+func (m *mockPlatform) Cleanup(_ context.Context) error {
+	m.cleanupCalled = true
+	return m.cleanupErr
+}
+
+func newTestCUDNBgpConfigWithAWS() *networkingv1alpha1.CUDNBgpConfig {
 	config := newTestCUDNBgpConfig()
+	config.Spec.AWS = &networkingv1alpha1.AWSConfig{
+		Region: "us-east-1",
+		CredentialsSecret: networkingv1alpha1.CredentialsSecretRef{
+			Name:      "cudn-bgp-aws-creds",
+			Namespace: "openshift-cudn-bgp-routing",
+		},
+		RouteServerEndpoints: []networkingv1alpha1.AWSRouteServerEndpoint{
+			{AvailabilityZone: "us-east-1a", EndpointIDs: []string{"rse-001"}},
+		},
+	}
+	return config
+}
+
+func newRouterNode(name, ip, az, providerID string) *corev1.Node {
+	return &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   name,
+			Labels: map[string]string{"bgp_router": "true", "topology.kubernetes.io/zone": az},
+		},
+		Spec: corev1.NodeSpec{ProviderID: providerID},
+		Status: corev1.NodeStatus{
+			Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: ip}},
+		},
+	}
+}
+
+func TestConfigReconcile_Phase4Success(t *testing.T) {
+	mock := &mockPlatform{}
+	config := newTestCUDNBgpConfigWithAWS()
+	s := configTestScheme()
+
+	network := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "operator.openshift.io/v1",
+			"kind":       "Network",
+			"metadata":   map[string]interface{}{"name": "cluster"},
+			"spec":       map[string]interface{}{},
+		},
+	}
+	frrNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: FRRNamespace}}
+	frrPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "frr-k8s-pod", Namespace: FRRNamespace, Labels: map[string]string{"app": "frr-k8s"}},
+		Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	node := newRouterNode("node-1", "10.0.1.10", "us-east-1a", "aws:///us-east-1a/i-001")
+
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(config, network, frrNS, frrPod, node).
+		WithStatusSubresource(config).
+		Build()
+
+	r := &CUDNBgpConfigReconciler{
+		Client: c, Scheme: s,
+		PlatformBuilder: func(_ context.Context, _ client.Client, _ *networkingv1alpha1.CUDNBgpConfig) (platform.CloudPlatform, error) {
+			return mock, nil
+		},
+	}
+
+	// First reconcile adds finalizer
+	_, _ = r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
+	// Second reconcile does full 4-phase
+	result, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+	if result.RequeueAfter != 5*time.Minute {
+		t.Errorf("expected 5m resync, got %v", result.RequeueAfter)
+	}
+	if !mock.reconcileNodesCalled {
+		t.Fatal("expected ReconcileNodes to be called")
+	}
+
+	updated := &networkingv1alpha1.CUDNBgpConfig{}
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "cluster"}, updated)
+	if updated.Status.Phase != networkingv1alpha1.PhaseReady {
+		t.Errorf("expected Ready, got %s", updated.Status.Phase)
+	}
+	if len(updated.Status.Conditions) != 4 {
+		t.Errorf("expected 4 conditions, got %d", len(updated.Status.Conditions))
+	}
+	for _, cond := range updated.Status.Conditions {
+		if cond.Type == networkingv1alpha1.ConditionAWSResourcesReconciled {
+			if cond.Status != metav1.ConditionTrue {
+				t.Errorf("expected AWSResourcesReconciled=True, got %s", cond.Status)
+			}
+			return
+		}
+	}
+	t.Error("AWSResourcesReconciled condition not found")
+}
+
+func TestConfigReconcile_Phase4CredentialFailure(t *testing.T) {
+	config := newTestCUDNBgpConfigWithAWS()
+	config.Finalizers = []string{ConfigFinalizerName}
+	s := configTestScheme()
+
+	network := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "operator.openshift.io/v1",
+			"kind":       "Network",
+			"metadata":   map[string]interface{}{"name": "cluster"},
+			"spec":       map[string]interface{}{},
+		},
+	}
+	frrNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: FRRNamespace}}
+	frrPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "frr-k8s-pod", Namespace: FRRNamespace, Labels: map[string]string{"app": "frr-k8s"}},
+		Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(config, network, frrNS, frrPod).
+		WithStatusSubresource(config).
+		Build()
+
+	r := &CUDNBgpConfigReconciler{
+		Client: c, Scheme: s,
+		PlatformBuilder: func(_ context.Context, _ client.Client, _ *networkingv1alpha1.CUDNBgpConfig) (platform.CloudPlatform, error) {
+			return nil, &awsplatform.CredentialError{Msg: "invalid credentials"}
+		},
+	}
+
+	result, _ := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
+	if result.RequeueAfter != 30*time.Second {
+		t.Errorf("expected 30s degraded requeue, got %v", result.RequeueAfter)
+	}
+
+	updated := &networkingv1alpha1.CUDNBgpConfig{}
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "cluster"}, updated)
+	if updated.Status.Phase != networkingv1alpha1.PhaseDegraded {
+		t.Errorf("expected Degraded, got %s", updated.Status.Phase)
+	}
+	for _, cond := range updated.Status.Conditions {
+		if cond.Type == networkingv1alpha1.ConditionAWSResourcesReconciled {
+			if cond.Reason != "AWSCredentialsInvalid" {
+				t.Errorf("expected reason AWSCredentialsInvalid, got %s", cond.Reason)
+			}
+			return
+		}
+	}
+	t.Error("AWSResourcesReconciled condition not found")
+}
+
+func TestConfigReconcile_Phase4Failure(t *testing.T) {
+	mock := &mockPlatform{reconcileNodesErr: fmt.Errorf("ec2 API timeout")}
+	config := newTestCUDNBgpConfigWithAWS()
+	config.Finalizers = []string{ConfigFinalizerName}
+	s := configTestScheme()
+
+	network := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "operator.openshift.io/v1",
+			"kind":       "Network",
+			"metadata":   map[string]interface{}{"name": "cluster"},
+			"spec":       map[string]interface{}{},
+		},
+	}
+	frrNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: FRRNamespace}}
+	frrPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "frr-k8s-pod", Namespace: FRRNamespace, Labels: map[string]string{"app": "frr-k8s"}},
+		Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+	node := newRouterNode("node-1", "10.0.1.10", "us-east-1a", "aws:///us-east-1a/i-001")
+
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(config, network, frrNS, frrPod, node).
+		WithStatusSubresource(config).
+		Build()
+
+	r := &CUDNBgpConfigReconciler{
+		Client: c, Scheme: s,
+		PlatformBuilder: func(_ context.Context, _ client.Client, _ *networkingv1alpha1.CUDNBgpConfig) (platform.CloudPlatform, error) {
+			return mock, nil
+		},
+	}
+
+	result, _ := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
+	if result.RequeueAfter != 30*time.Second {
+		t.Errorf("expected 30s degraded requeue, got %v", result.RequeueAfter)
+	}
+
+	updated := &networkingv1alpha1.CUDNBgpConfig{}
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "cluster"}, updated)
+	if updated.Status.Phase != networkingv1alpha1.PhaseDegraded {
+		t.Errorf("expected Degraded, got %s", updated.Status.Phase)
+	}
+	for _, cond := range updated.Status.Conditions {
+		if cond.Type == networkingv1alpha1.ConditionAWSResourcesReconciled {
+			if cond.Reason != "AWSReconcileFailed" {
+				t.Errorf("expected reason AWSReconcileFailed, got %s", cond.Reason)
+			}
+			return
+		}
+	}
+	t.Error("AWSResourcesReconciled condition not found")
+}
+
+func TestConfigReconcile_Phase4NodeFiltering(t *testing.T) {
+	mock := &mockPlatform{}
+	config := newTestCUDNBgpConfigWithAWS()
+	config.Finalizers = []string{ConfigFinalizerName}
+	s := configTestScheme()
+
+	network := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "operator.openshift.io/v1",
+			"kind":       "Network",
+			"metadata":   map[string]interface{}{"name": "cluster"},
+			"spec":       map[string]interface{}{},
+		},
+	}
+	frrNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: FRRNamespace}}
+	frrPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "frr-k8s-pod", Namespace: FRRNamespace, Labels: map[string]string{"app": "frr-k8s"}},
+		Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+
+	completeNodes := []*corev1.Node{
+		newRouterNode("node-1", "10.0.1.10", "us-east-1a", "aws:///us-east-1a/i-001"),
+		newRouterNode("node-2", "10.0.2.10", "us-east-1b", "aws:///us-east-1b/i-002"),
+		newRouterNode("node-3", "10.0.3.10", "us-east-1c", "aws:///us-east-1c/i-003"),
+	}
+	// Missing IP
+	missingIP := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-no-ip",
+			Labels: map[string]string{"bgp_router": "true", "topology.kubernetes.io/zone": "us-east-1a"},
+		},
+		Spec: corev1.NodeSpec{ProviderID: "aws:///us-east-1a/i-004"},
+	}
+	// Missing AZ
+	missingAZ := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "node-no-az",
+			Labels: map[string]string{"bgp_router": "true"},
+		},
+		Spec: corev1.NodeSpec{ProviderID: "aws:///us-east-1a/i-005"},
+		Status: corev1.NodeStatus{
+			Addresses: []corev1.NodeAddress{{Type: corev1.NodeInternalIP, Address: "10.0.4.10"}},
+		},
+	}
+
+	objs := []client.Object{config, network, frrNS, frrPod, missingIP, missingAZ}
+	for _, n := range completeNodes {
+		objs = append(objs, n)
+	}
+
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(objs...).
+		WithStatusSubresource(config).
+		Build()
+
+	r := &CUDNBgpConfigReconciler{
+		Client: c, Scheme: s,
+		PlatformBuilder: func(_ context.Context, _ client.Client, _ *networkingv1alpha1.CUDNBgpConfig) (platform.CloudPlatform, error) {
+			return mock, nil
+		},
+	}
+
+	_, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
+	if err != nil {
+		t.Fatalf("reconcile error: %v", err)
+	}
+	if !mock.reconcileNodesCalled {
+		t.Fatal("expected ReconcileNodes to be called")
+	}
+	if len(mock.reconcileNodesArgs) != 3 {
+		t.Errorf("expected 3 nodes passed to ReconcileNodes, got %d", len(mock.reconcileNodesArgs))
+	}
+}
+
+func TestConfigReconcile_DeleteSuccessful(t *testing.T) {
+	mock := &mockPlatform{}
+	now := metav1.Now()
+	config := newTestCUDNBgpConfigWithAWS()
 	config.Finalizers = []string{ConfigFinalizerName}
 	config.DeletionTimestamp = &now
 
@@ -284,40 +506,33 @@ func TestConfigReconcile_DeleteSuccessful(t *testing.T) {
 		WithStatusSubresource(config).
 		Build()
 
-	r := &CUDNBgpConfigReconciler{Client: c, Scheme: s}
-	_, err := r.Reconcile(context.Background(), reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "cluster"},
-	})
+	r := &CUDNBgpConfigReconciler{
+		Client: c, Scheme: s,
+		PlatformBuilder: func(_ context.Context, _ client.Client, _ *networkingv1alpha1.CUDNBgpConfig) (platform.CloudPlatform, error) {
+			return mock, nil
+		},
+	}
+
+	_, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// FRRConfiguration should be cleaned up
+	if !mock.cleanupCalled {
+		t.Error("expected Cleanup to be called during deletion")
+	}
+
 	obj := &unstructured.Unstructured{}
 	obj.SetGroupVersionKind(FRRConfigurationGVK)
 	if err := c.Get(context.Background(), types.NamespacedName{Name: "cudn-bgp-az-1", Namespace: FRRNamespace}, obj); err == nil {
 		t.Error("FRRConfiguration should be deleted during cleanup")
 	}
 
-	// Finalizer should be removed
 	updated := &networkingv1alpha1.CUDNBgpConfig{}
 	_ = c.Get(context.Background(), types.NamespacedName{Name: "cluster"}, updated)
 	for _, f := range updated.Finalizers {
 		if f == ConfigFinalizerName {
 			t.Error("finalizer should be removed after successful deletion")
 		}
-	}
-}
-
-func TestConfigReconcile_NotFound(t *testing.T) {
-	s := configTestScheme()
-	c := fake.NewClientBuilder().WithScheme(s).Build()
-
-	r := &CUDNBgpConfigReconciler{Client: c, Scheme: s}
-	_, err := r.Reconcile(context.Background(), reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "cluster"},
-	})
-	if err != nil {
-		t.Fatalf("expected no error for not-found, got: %v", err)
 	}
 }

@@ -55,15 +55,9 @@ spec:
                     type: string
                   subnet:
                     type: string
-                  topology:
-                    enum:
-                    - Layer2
-                    - Layer3
-                    type: string
                 required:
                 - name
                 - subnet
-                - topology
                 type: object
             required:
             - network

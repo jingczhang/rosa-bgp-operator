@@ -18,18 +18,33 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	"reflect"
+
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	networkingv1alpha1 "github.com/openshift/cudn-bgp-routing-operator/api/v1alpha1"
+	"github.com/openshift/cudn-bgp-routing-operator/internal/platform"
+	awsplatform "github.com/openshift/cudn-bgp-routing-operator/internal/platform/aws"
 )
 
 // +kubebuilder:rbac:groups=networking.openshift.io,resources=cudnbgpconfigs,verbs=get;list;watch;create;update;patch;delete
@@ -40,10 +55,16 @@ import (
 // +kubebuilder:rbac:groups=frrk8s.metallb.io,resources=frrconfigurations,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=config.openshift.io,resources=infrastructures,verbs=get
+
+type PlatformBuilderFunc func(ctx context.Context, c client.Client, config *networkingv1alpha1.CUDNBgpConfig) (platform.CloudPlatform, error)
 
 type CUDNBgpConfigReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme          *runtime.Scheme
+	PlatformBuilder PlatformBuilderFunc
 }
 
 func (r *CUDNBgpConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -52,6 +73,11 @@ func (r *CUDNBgpConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	config := &networkingv1alpha1.CUDNBgpConfig{}
 	if err := r.Get(ctx, req.NamespacedName, config); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
+	}
+
+	if config.Name != SingletonName {
+		return r.setDegraded(ctx, config, networkingv1alpha1.ConditionNetworkOperatorPatched,
+			"InvalidName", fmt.Sprintf("CUDNBgpConfig must be named %q, got %q", SingletonName, config.Name))
 	}
 
 	if !config.DeletionTimestamp.IsZero() {
@@ -125,6 +151,27 @@ func (r *CUDNBgpConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		ObservedGeneration: config.Generation,
 	})
 
+	// Phase 4: Reconcile AWS Resources (if configured)
+	if config.Spec.AWS != nil {
+		log.Info("Phase 4: reconciling AWS resources")
+		if err := r.reconcileAWS(ctx, config); err != nil {
+			var credErr *awsplatform.CredentialError
+			if errors.As(err, &credErr) {
+				return r.setDegraded(ctx, config, networkingv1alpha1.ConditionAWSResourcesReconciled,
+					"AWSCredentialsInvalid", credErr.Error())
+			}
+			return r.setDegraded(ctx, config, networkingv1alpha1.ConditionAWSResourcesReconciled,
+				"AWSReconcileFailed", fmt.Sprintf("failed to reconcile AWS resources: %v", err))
+		}
+		meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
+			Type:               networkingv1alpha1.ConditionAWSResourcesReconciled,
+			Status:             metav1.ConditionTrue,
+			Reason:             "Reconciled",
+			Message:            "Route Server peers and source/dest check reconciled",
+			ObservedGeneration: config.Generation,
+		})
+	}
+
 	config.Status.Phase = networkingv1alpha1.PhaseReady
 	if err := r.Status().Update(ctx, config); err != nil {
 		return ctrl.Result{}, err
@@ -132,6 +179,107 @@ func (r *CUDNBgpConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	log.Info("reconciliation complete", "phase", config.Status.Phase)
 	return ctrl.Result{RequeueAfter: 5 * time.Minute}, nil
+}
+
+func (r *CUDNBgpConfigReconciler) reconcileAWS(ctx context.Context, config *networkingv1alpha1.CUDNBgpConfig) error {
+	builder := r.PlatformBuilder
+	if builder == nil {
+		builder = defaultPlatformBuilder
+	}
+	p, err := builder(ctx, r.Client, config)
+	if err != nil {
+		return err
+	}
+
+	nodes, err := r.listRouterNodes(ctx, config)
+	if err != nil {
+		return fmt.Errorf("listing router nodes: %w", err)
+	}
+
+	return p.ReconcileNodes(ctx, nodes)
+}
+
+func defaultPlatformBuilder(ctx context.Context, c client.Client, config *networkingv1alpha1.CUDNBgpConfig) (platform.CloudPlatform, error) {
+	awsSpec := config.Spec.AWS
+
+	clusterID, err := getInfrastructureName(ctx, c)
+	if err != nil {
+		return nil, fmt.Errorf("reading cluster infrastructure name: %w", err)
+	}
+
+	endpointsByAZ := make(map[string][]string)
+	for _, ep := range awsSpec.RouteServerEndpoints {
+		endpointsByAZ[ep.AvailabilityZone] = ep.EndpointIDs
+	}
+
+	cfg := awsplatform.Config{
+		Region:            awsSpec.Region,
+		EndpointsByAZ:     endpointsByAZ,
+		LocalASN:          config.Spec.BGP.LocalASN,
+		LivenessDetection: string(config.Spec.BGP.LivenessDetection),
+		ClusterID:         clusterID,
+	}
+
+	secret := &corev1.Secret{}
+	key := types.NamespacedName{
+		Name:      awsSpec.CredentialsSecret.Name,
+		Namespace: awsSpec.CredentialsSecret.Namespace,
+	}
+	if err := c.Get(ctx, key, secret); err != nil {
+		return nil, fmt.Errorf("reading credentials secret %s/%s: %w", key.Namespace, key.Name, err)
+	}
+	cfg.AccessKeyID = string(secret.Data["AWS_ACCESS_KEY_ID"])
+	cfg.SecretAccessKey = string(secret.Data["AWS_SECRET_ACCESS_KEY"])
+
+	return awsplatform.New(ctx, cfg)
+}
+
+func getInfrastructureName(ctx context.Context, c client.Client) (string, error) {
+	infra := &unstructured.Unstructured{}
+	infra.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "config.openshift.io",
+		Version: "v1",
+		Kind:    "Infrastructure",
+	})
+	if err := c.Get(ctx, types.NamespacedName{Name: "cluster"}, infra); err != nil {
+		return "", err
+	}
+	name, found, err := unstructured.NestedString(infra.Object, "status", "infrastructureName")
+	if err != nil || !found || name == "" {
+		return "", fmt.Errorf("status.infrastructureName not set on Infrastructure/cluster")
+	}
+	return name, nil
+}
+
+func (r *CUDNBgpConfigReconciler) listRouterNodes(ctx context.Context, config *networkingv1alpha1.CUDNBgpConfig) ([]platform.RouterNode, error) {
+	nodeList := &corev1.NodeList{}
+	sel := labels.SelectorFromSet(config.Spec.RouterNodeSelector)
+	if err := r.List(ctx, nodeList, client.MatchingLabelsSelector{Selector: sel}); err != nil {
+		return nil, err
+	}
+
+	nodes := make([]platform.RouterNode, 0, len(nodeList.Items))
+	for i := range nodeList.Items {
+		node := &nodeList.Items[i]
+		rn := platform.RouterNode{
+			Name:       node.Name,
+			ProviderID: node.Spec.ProviderID,
+			AZ:         node.Labels["topology.kubernetes.io/zone"],
+		}
+		for _, addr := range node.Status.Addresses {
+			if addr.Type == corev1.NodeInternalIP {
+				rn.PrivateIP = addr.Address
+				break
+			}
+		}
+		if rn.PrivateIP == "" || rn.AZ == "" || rn.ProviderID == "" {
+			logf.FromContext(ctx).Info("skipping node with incomplete info",
+				"node", node.Name, "ip", rn.PrivateIP, "az", rn.AZ, "providerID", rn.ProviderID)
+			continue
+		}
+		nodes = append(nodes, rn)
+	}
+	return nodes, nil
 }
 
 func (r *CUDNBgpConfigReconciler) reconcileDelete(ctx context.Context, config *networkingv1alpha1.CUDNBgpConfig) (ctrl.Result, error) {
@@ -144,6 +292,22 @@ func (r *CUDNBgpConfigReconciler) reconcileDelete(ctx context.Context, config *n
 	if len(routingList.Items) > 0 {
 		log.Info("deletion blocked: CUDNBgpRouting CRs still exist", "count", len(routingList.Items))
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+	}
+
+	// Clean up AWS resources before removing FRR configs
+	if config.Spec.AWS != nil {
+		log.Info("cleaning up AWS resources")
+		builder := r.PlatformBuilder
+		if builder == nil {
+			builder = defaultPlatformBuilder
+		}
+		p, err := builder(ctx, r.Client, config)
+		if err != nil {
+			return ctrl.Result{}, fmt.Errorf("building AWS platform for cleanup: %w", err)
+		}
+		if err := p.Cleanup(ctx); err != nil {
+			return ctrl.Result{}, fmt.Errorf("cleaning up AWS resources: %w", err)
+		}
 	}
 
 	log.Info("cleaning up FRR configurations")
@@ -179,9 +343,33 @@ func (r *CUDNBgpConfigReconciler) setDegraded(
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, fmt.Errorf("%s: %s", reason, message)
 }
 
+func nodeRelevantChangePredicate() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldNode, ok1 := e.ObjectOld.(*corev1.Node)
+			newNode, ok2 := e.ObjectNew.(*corev1.Node)
+			if !ok1 || !ok2 {
+				return true
+			}
+			if !reflect.DeepEqual(oldNode.Labels, newNode.Labels) {
+				return true
+			}
+			if oldNode.Spec.ProviderID != newNode.Spec.ProviderID {
+				return true
+			}
+			return !reflect.DeepEqual(oldNode.Status.Addresses, newNode.Status.Addresses)
+		},
+	}
+}
+
 func (r *CUDNBgpConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&networkingv1alpha1.CUDNBgpConfig{}).
+		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(
+			func(_ context.Context, _ client.Object) []reconcile.Request {
+				return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: SingletonName}}}
+			},
+		), builder.WithPredicates(nodeRelevantChangePredicate())).
 		Named("cudnbgpconfig").
 		Complete(r)
 }

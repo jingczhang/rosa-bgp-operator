@@ -42,11 +42,14 @@ const (
 	ConditionNetworkOperatorPatched  = "NetworkOperatorPatched"
 	ConditionFRRNamespaceReady       = "FRRNamespaceReady"
 	ConditionFRRConfigurationApplied = "FRRConfigurationApplied"
+	ConditionAWSResourcesReconciled  = "AWSResourcesReconciled"
 )
 
 type BGPNeighbor struct {
-	Address   string `json:"address"`
-	RemoteASN uint32 `json:"remoteASN"`
+	Address string `json:"address"`
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=4294967295
+	RemoteASN int64 `json:"remoteASN"`
 }
 
 type AvailabilityZone struct {
@@ -55,8 +58,26 @@ type AvailabilityZone struct {
 	Neighbors []BGPNeighbor `json:"neighbors"`
 }
 
+type CredentialsSecretRef struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+}
+
+type AWSRouteServerEndpoint struct {
+	AvailabilityZone string   `json:"availabilityZone"`
+	EndpointIDs      []string `json:"endpointIDs"`
+}
+
+type AWSConfig struct {
+	Region               string                   `json:"region"`
+	CredentialsSecret    CredentialsSecretRef     `json:"credentialsSecret"`
+	RouteServerEndpoints []AWSRouteServerEndpoint `json:"routeServerEndpoints"`
+}
+
 type BGPConfig struct {
-	LocalASN uint32 `json:"localASN"`
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=4294967295
+	LocalASN int64 `json:"localASN"`
 	// +kubebuilder:default="bgp-keepalive"
 	LivenessDetection LivenessDetectionType `json:"livenessDetection,omitempty"`
 	// +kubebuilder:validation:MinItems=1
@@ -66,6 +87,7 @@ type BGPConfig struct {
 type CUDNBgpConfigSpec struct {
 	BGP                BGPConfig         `json:"bgp"`
 	RouterNodeSelector map[string]string `json:"routerNodeSelector"`
+	AWS                *AWSConfig        `json:"aws,omitempty"`
 }
 
 type CUDNBgpConfigStatus struct {

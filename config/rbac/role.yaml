@@ -18,7 +18,9 @@ rules:
 - apiGroups:
   - ""
   resources:
+  - nodes
   - pods
+  - secrets
   verbs:
   - get
   - list

@@ -4,5 +4,5 @@ metadata:
   name: prod
 spec:
   network:
-    name: prod                       # matches PoC ClusterUserDefinedNetwork "cluster-udn-prod"
+    name: prod
     subnet: 10.100.0.0/16

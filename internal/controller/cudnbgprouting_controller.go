@@ -83,8 +83,9 @@ func (r *CUDNBgpRoutingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Pre-check: CUDNBgpConfig must exist and be Ready
 	bgpConfig := &networkingv1alpha1.CUDNBgpConfig{}
-	if err := r.Get(ctx, types.NamespacedName{Name: "cluster"}, bgpConfig); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Name: SingletonName}, bgpConfig); err != nil {
 		routing.Status.Phase = networkingv1alpha1.PhasePending
+		routing.Status.Conditions = nil
 		if err := r.Status().Update(ctx, routing); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -93,6 +94,7 @@ func (r *CUDNBgpRoutingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 	if bgpConfig.Status.Phase != networkingv1alpha1.PhaseReady {
 		routing.Status.Phase = networkingv1alpha1.PhasePending
+		routing.Status.Conditions = nil
 		if err := r.Status().Update(ctx, routing); err != nil {
 			return ctrl.Result{}, err
 		}

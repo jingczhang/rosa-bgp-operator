@@ -100,7 +100,7 @@ func ensureSingleFRRConfiguration(
 	for _, n := range az.Neighbors {
 		neighbor := map[string]interface{}{
 			"address":   n.Address,
-			"asn":       int64(n.RemoteASN),
+			"asn":       n.RemoteASN,
 			"disableMP": true,
 			"toReceive": map[string]interface{}{
 				"allowed": map[string]interface{}{
@@ -115,7 +115,7 @@ func ensureSingleFRRConfiguration(
 	}
 
 	router := map[string]interface{}{
-		"asn":       int64(config.Spec.BGP.LocalASN),
+		"asn":       config.Spec.BGP.LocalASN,
 		"neighbors": neighbors,
 	}
 

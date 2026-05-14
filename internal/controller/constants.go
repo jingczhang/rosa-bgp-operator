@@ -22,10 +22,11 @@ const (
 	ConfigFinalizerName  = "networking.openshift.io/cudnbgpconfig"
 	RoutingFinalizerName = "networking.openshift.io/cudnbgprouting"
 
+	SingletonName          = "cluster"
 	FRRNamespace           = "openshift-frr-k8s"
 	FRRConfigNamePrefix    = "cudn-bgp-az-"
 	CUDNNamePrefix         = "cluster-udn-"
-	RouteAdvertisementName = "default"
+	RouteAdvertisementName = "cudn-bgp-route-advertisements"
 
 	LabelManagedBy    = "app.kubernetes.io/managed-by"
 	LabelManagedByVal = "cudn-bgp-routing-operator"

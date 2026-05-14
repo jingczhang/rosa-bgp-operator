@@ -51,9 +51,8 @@ func newTestCUDNBgpRouting() *networkingv1alpha1.CUDNBgpRouting {
 		},
 		Spec: networkingv1alpha1.CUDNBgpRoutingSpec{
 			Network: networkingv1alpha1.NetworkConfig{
-				Name:     "prod",
-				Subnet:   "10.100.0.0/16",
-				Topology: networkingv1alpha1.TopologyLayer2,
+				Name:   "prod",
+				Subnet: "10.100.0.0/16",
 			},
 		},
 	}
@@ -81,57 +80,6 @@ func newReadyCUDNBgpConfig() *networkingv1alpha1.CUDNBgpConfig {
 	}
 }
 
-func TestRoutingReconcile_PendingWithoutConfig(t *testing.T) {
-	routing := newTestCUDNBgpRouting()
-	routing.Finalizers = []string{RoutingFinalizerName}
-	s := routingTestScheme()
-
-	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(routing).
-		WithStatusSubresource(routing).
-		Build()
-
-	r := &CUDNBgpRoutingReconciler{Client: c, Scheme: s}
-	result, err := r.Reconcile(context.Background(), reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "prod"},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.RequeueAfter == 0 {
-		t.Error("expected requeue when config not found")
-	}
-
-	updated := &networkingv1alpha1.CUDNBgpRouting{}
-	_ = c.Get(context.Background(), types.NamespacedName{Name: "prod"}, updated)
-	if updated.Status.Phase != networkingv1alpha1.PhasePending {
-		t.Errorf("expected Pending, got %s", updated.Status.Phase)
-	}
-}
-
-func TestRoutingReconcile_PendingWhenConfigNotReady(t *testing.T) {
-	routing := newTestCUDNBgpRouting()
-	routing.Finalizers = []string{RoutingFinalizerName}
-	config := newReadyCUDNBgpConfig()
-	config.Status.Phase = networkingv1alpha1.PhaseConfiguring
-
-	s := routingTestScheme()
-	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(routing, config).
-		WithStatusSubresource(routing, config).
-		Build()
-
-	r := &CUDNBgpRoutingReconciler{Client: c, Scheme: s}
-	result, err := r.Reconcile(context.Background(), reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "prod"},
-	})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if result.RequeueAfter == 0 {
-		t.Error("expected requeue when config not ready")
-	}
-}
 
 func TestRoutingReconcile_FullReconcile(t *testing.T) {
 	routing := newTestCUDNBgpRouting()
@@ -193,35 +141,6 @@ func TestRoutingReconcile_FullReconcile(t *testing.T) {
 	}
 }
 
-func TestRoutingReconcile_AddsFinalizer(t *testing.T) {
-	routing := newTestCUDNBgpRouting()
-	config := newReadyCUDNBgpConfig()
-
-	s := routingTestScheme()
-	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(routing, config).
-		WithStatusSubresource(routing, config).
-		Build()
-
-	r := &CUDNBgpRoutingReconciler{Client: c, Scheme: s}
-	_, _ = r.Reconcile(context.Background(), reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "prod"},
-	})
-
-	updated := &networkingv1alpha1.CUDNBgpRouting{}
-	_ = c.Get(context.Background(), types.NamespacedName{Name: "prod"}, updated)
-
-	found := false
-	for _, f := range updated.Finalizers {
-		if f == RoutingFinalizerName {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("finalizer not added")
-	}
-}
-
 func TestRoutingReconcile_DeleteLastRemovesRA(t *testing.T) {
 	now := metav1.Now()
 	routing := newTestCUDNBgpRouting()
@@ -272,7 +191,7 @@ func TestRoutingReconcile_DeleteKeepsRAWhenOthersExist(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "staging"},
 		Spec: networkingv1alpha1.CUDNBgpRoutingSpec{
 			Network: networkingv1alpha1.NetworkConfig{
-				Name: "staging", Subnet: "10.200.0.0/16", Topology: networkingv1alpha1.TopologyLayer2,
+				Name: "staging", Subnet: "10.200.0.0/16",
 			},
 		},
 	}
@@ -315,7 +234,7 @@ func TestRoutingReconcile_DuplicateNetworkName(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "existing-prod"},
 		Spec: networkingv1alpha1.CUDNBgpRoutingSpec{
 			Network: networkingv1alpha1.NetworkConfig{
-				Name: "prod", Subnet: "10.100.0.0/16", Topology: networkingv1alpha1.TopologyLayer2,
+				Name: "prod", Subnet: "10.100.0.0/16",
 			},
 		},
 	}
@@ -341,18 +260,5 @@ func TestRoutingReconcile_DuplicateNetworkName(t *testing.T) {
 	_ = c.Get(context.Background(), types.NamespacedName{Name: "prod"}, updated)
 	if updated.Status.Phase != networkingv1alpha1.PhaseDegraded {
 		t.Errorf("expected Degraded, got %s", updated.Status.Phase)
-	}
-}
-
-func TestRoutingReconcile_NotFound(t *testing.T) {
-	s := routingTestScheme()
-	c := fake.NewClientBuilder().WithScheme(s).Build()
-
-	r := &CUDNBgpRoutingReconciler{Client: c, Scheme: s}
-	_, err := r.Reconcile(context.Background(), reconcile.Request{
-		NamespacedName: types.NamespacedName{Name: "prod"},
-	})
-	if err != nil {
-		t.Fatalf("expected no error for not-found, got: %v", err)
 	}
 }

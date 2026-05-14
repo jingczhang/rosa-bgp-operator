@@ -46,6 +46,39 @@ spec:
             type: object
           spec:
             properties:
+              aws:
+                properties:
+                  credentialsSecret:
+                    properties:
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+                    required:
+                    - name
+                    - namespace
+                    type: object
+                  region:
+                    type: string
+                  routeServerEndpoints:
+                    items:
+                      properties:
+                        availabilityZone:
+                          type: string
+                        endpointIDs:
+                          items:
+                            type: string
+                          type: array
+                      required:
+                      - availabilityZone
+                      - endpointIDs
+                      type: object
+                    type: array
+                required:
+                - credentialsSecret
+                - region
+                - routeServerEndpoints
+                type: object
               bgp:
                 properties:
                   availabilityZones:
@@ -57,7 +90,9 @@ spec:
                               address:
                                 type: string
                               remoteASN:
-                                format: int32
+                                format: int64
+                                maximum: 4294967295
+                                minimum: 0
                                 type: integer
                             required:
                             - address
@@ -82,7 +117,9 @@ spec:
                     - bgp-keepalive
                     type: string
                   localASN:
-                    format: int32
+                    format: int64
+                    maximum: 4294967295
+                    minimum: 0
                     type: integer
                 required:
                 - availabilityZones

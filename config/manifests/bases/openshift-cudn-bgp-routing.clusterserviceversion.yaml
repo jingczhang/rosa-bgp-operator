@@ -30,7 +30,7 @@ metadata:
           "kind": "CUDNBgpRouting",
           "metadata": {"name": "prod"},
           "spec": {
-            "network": {"name": "prod", "subnet": "10.100.0.0/16", "topology": "Layer2"}
+            "network": {"name": "prod", "subnet": "10.100.0.0/16"}
           }
         }
       ]

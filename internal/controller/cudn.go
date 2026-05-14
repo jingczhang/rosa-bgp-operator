@@ -71,12 +71,6 @@ func EnsureNamespace(ctx context.Context, c client.Client, name string) error {
 
 func EnsureCUDN(ctx context.Context, c client.Client, routing *networkingv1alpha1.CUDNBgpRouting) error {
 	name := CUDNNamePrefix + routing.Spec.Network.Name
-	topology := string(routing.Spec.Network.Topology)
-
-	layerKey := "layer2"
-	if routing.Spec.Network.Topology == networkingv1alpha1.TopologyLayer3 {
-		layerKey = "layer3"
-	}
 
 	obj := &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -96,8 +90,8 @@ func EnsureCUDN(ctx context.Context, c client.Client, routing *networkingv1alpha
 					},
 				},
 				"network": map[string]interface{}{
-					"topology": topology,
-					layerKey: map[string]interface{}{
+					"topology": "Layer2",
+					"layer2": map[string]interface{}{
 						"role": "Primary",
 						"ipam": map[string]interface{}{
 							"lifecycle": "Persistent",

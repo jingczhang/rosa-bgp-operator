@@ -1,7 +1,7 @@
 # These resources constitute the fully configured set of manifests
 # used to generate the 'manifests/' directory in a bundle.
 resources:
-- bases/rosa-bgp-operator.clusterserviceversion.yaml
+- bases/openshift-cudn-bgp-routing.clusterserviceversion.yaml
 - ../default
 - ../samples
 - ../scorecard
