@@ -37,7 +37,7 @@ metadata:
     capabilities: Basic Install
     categories: Networking
     containerImage: controller:latest
-    description: Automates L3 direct routing between CUDN Pod networks and AWS VPC networks via BGP on OpenShift (ROSA HCP).
+    description: Automates L3 direct routing between CUDN Pod networks and external networks via BGP on OpenShift. Cloud platform aware — auto-discovers BGP infrastructure on AWS (VPC Route Server) and works on-premise with explicit configuration.
     operatorframework.io/suggested-namespace: openshift-cudn-bgp-routing
   name: cudn-bgp-routing-operator.v0.1.0
   namespace: placeholder
@@ -68,10 +68,14 @@ spec:
         version: v1
   description: |
     CUDN BGP Routing Operator automates L3 direct routing between
-    Cluster User Defined Networks (CUDN) and AWS VPC networks via BGP
-    on OpenShift (ROSA HCP). It replaces manual in-cluster configuration
-    steps by reconciling FRRConfiguration, ClusterUserDefinedNetwork,
-    Namespace, and RouteAdvertisements resources from two simple CRs.
+    Cluster User Defined Networks (CUDN) and external networks via BGP
+    on OpenShift. Core BGP and CUDN functionality works on any OpenShift
+    cluster with external BGP servers. When platform configuration is
+    provided (e.g. AWS), the operator auto-discovers cloud BGP
+    infrastructure and manages cloud-side networking resources. It
+    replaces manual in-cluster configuration steps by reconciling
+    FRRConfiguration, ClusterUserDefinedNetwork, Namespace, and
+    RouteAdvertisements resources from two simple CRs.
   displayName: CUDN BGP Routing Operator
   icon:
     - base64data: ""

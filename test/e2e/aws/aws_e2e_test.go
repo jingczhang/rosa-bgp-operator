@@ -68,7 +68,9 @@ var _ = Describe("AWS E2E", Ordered, func() {
 			}).WithTimeout(reconcileTimeout).WithPolling(pollInterval).Should(Succeed())
 
 			By("verifying FRRConfigurations exist")
-			for i := 1; i <= len(bgpConfig.Spec.BGP.AvailabilityZones); i++ {
+			azCount := len(endpointsByAZ)
+			Expect(azCount).To(BeNumerically(">", 0), "expected at least 1 AZ from discovery")
+			for i := 1; i <= azCount; i++ {
 				frrCfg := &unstructured.Unstructured{}
 				frrCfg.SetGroupVersionKind(schema.GroupVersionKind{
 					Group: "frrk8s.metallb.io", Version: "v1beta1", Kind: "FRRConfiguration",
@@ -78,6 +80,13 @@ var _ = Describe("AWS E2E", Ordered, func() {
 					Namespace: frrNamespace,
 				}, frrCfg)).To(Succeed(), "FRRConfiguration %d should exist", i)
 			}
+
+			By("verifying status.aws is populated")
+			cfgFresh := &networkingv1alpha1.CUDNBgpConfig{}
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: bgpConfig.Name}, cfgFresh)).To(Succeed())
+			Expect(cfgFresh.Status.AWS).NotTo(BeNil(), "status.aws should be populated")
+			Expect(cfgFresh.Status.AWS.RouteServers).NotTo(BeEmpty(),
+				"status.aws.routeServers should contain discovered route servers")
 
 			By("verifying Route Server peers exist per AZ")
 			nodes, err := routerNodes(ctx)
@@ -346,7 +355,8 @@ var _ = Describe("AWS E2E", Ordered, func() {
 			}).WithTimeout(reconcileTimeout).WithPolling(pollInterval).Should(Succeed())
 
 			By("verifying FRRConfigurations are deleted")
-			for i := 1; i <= len(bgpConfig.Spec.BGP.AvailabilityZones); i++ {
+			azCount := len(endpointsByAZ)
+			for i := 1; i <= azCount; i++ {
 				frrCfg := &unstructured.Unstructured{}
 				frrCfg.SetGroupVersionKind(schema.GroupVersionKind{
 					Group: "frrk8s.metallb.io", Version: "v1beta1", Kind: "FRRConfiguration",

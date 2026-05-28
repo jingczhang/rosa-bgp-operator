@@ -11,15 +11,21 @@ Platform-independent tests for the CUDN BGP Routing Operator controllers and hel
 
 ## Test Configuration
 
-Unit tests use hardcoded values based on the PoC configuration:
+Unit tests use hardcoded values based on the PoC configuration. Both modes (with and without cloud integration) share the same base values; the only difference is whether `spec.aws` is set and the platform is mocked.
+
+**Shared values:**
 
 | Field | Value |
 |:---|:---|
-| Cluster | ROSA HCP on AWS (OCP 4.18+) |
-| Operator namespace | openshift-cudn-bgp-routing |
 | Local BGP ASN | 65001 |
-| Availability Zones | 1 (minimal for unit tests) |
+| Remote BGP ASN | 64512 |
 | Router node selector | `bgp_router: "true"` |
+| Availability Zones | 1 (minimal for unit tests) |
+| Neighbor addresses | `10.0.1.47`, `10.0.1.183` |
+
+**Without cloud integration** (`newTestCUDNBgpConfig`): explicit `spec.bgp.availabilityZones` with the above neighbors. No `spec.aws`.
+
+**With cloud integration** (`newTestCUDNBgpConfigWithAWS`): `spec.aws` set (region `us-east-1`, Route Server ID `rs-1`). The `CloudPlatform` is mocked to return a `DiscoveryResult` with 1 Route Server, 1 endpoint (`rse-001` in `us-east-1a`, address `10.0.1.47`, remote ASN `64512`).
 
 ---
 
@@ -33,64 +39,65 @@ These tests use a fake Kubernetes client and a mocked `CloudPlatform` interface.
 
 ---
 
-## Config Controller
+### Config Controller
 
-Tests for `CUDNBgpConfigReconciler` covering Phases 1-4 and deletion lifecycle.
+Tests for `CUDNBgpConfigReconciler` covering Phases 1-5 and deletion lifecycle.
 
-### Reconciliation
-
-| ID | Test Case | Setup | Expected Result |
-|:---|:---|:---|:---|
-| UT-01 | Full reconcile (Phases 1-3) | Network CR exists, FRR namespace + pod running | Network patched, FRRConfigurations created, phase=Ready with 3 conditions (NetworkOperatorPatched, FRRNamespaceReady, FRRConfigurationApplied) |
-| UT-02 | Phase 4 success (mocked CloudPlatform) | spec.aws set, mock platform, 1 router node | ReconcileNodes called, AWSResourcesReconciled=True, phase=Ready with 4 conditions (NetworkOperatorPatched, FRRNamespaceReady, FRRConfigurationApplied, AWSResourcesReconciled) |
-| UT-03 | Phase 4 credential failure | Mock platform builder returns CredentialError | AWSResourcesReconciled=False, reason=AWSCredentialsInvalid, phase=Degraded |
-| UT-04 | Phase 4 failure | Mock platform returns error | AWSResourcesReconciled=False, reason=AWSReconcileFailed, phase=Degraded, requeue 30s |
-| UT-05 | Node filtering | 5 nodes: 3 complete, 1 missing IP, 1 missing AZ | Only 3 RouterNodes passed to ReconcileNodes |
-
-### Deletion
+#### Reconciliation
 
 | ID | Test Case | Setup | Expected Result |
 |:---|:---|:---|:---|
-| UT-06 | Delete blocked by routing CRs | CUDNBgpRouting CR exists | Finalizer retained, requeues every 10s |
-| UT-07 | Delete successful | spec.aws set, mock platform, FRRConfiguration exists | Cleanup called, FRRConfigurations deleted, finalizer removed |
+| UT-01 | Full reconcile without cloud (Phases 1-2, 4) | Network CR exists, FRR namespace + pod running, explicit `bgp.availabilityZones` | Network patched, FRRConfigurations created from explicit neighbors, phase=Ready with 3 conditions (NetworkOperatorPatched, FRRNamespaceReady, FRRConfigurationApplied) |
+| UT-02 | Full reconcile with cloud (Phases 1-5) | spec.aws set with routeServerIDs, mock platform with discovery | AWSEndpointsDiscovered=True, FRRConfigurations created from discovered neighbors, ReconcileNodes called, AWSResourcesReconciled=True, phase=Ready with 5 conditions |
+| UT-03 | Phase 3 credential failure | Mock platform builder returns CredentialError | AWSEndpointsDiscovered=False, reason=AWSCredentialsInvalid, phase=Degraded |
+| UT-04 | Phase 3 discovery failure | Mock platform discovery returns error | AWSEndpointsDiscovered=False, reason=AWSDiscoveryFailed, phase=Degraded, requeue 30s |
+| UT-05 | Phase 5 failure | Mock platform ReconcileNodes returns error | AWSResourcesReconciled=False, reason=AWSReconcileFailed, phase=Degraded, requeue 30s |
+| UT-06 | Node filtering | 5 nodes: 3 complete, 1 missing IP, 1 missing AZ | Only 3 RouterNodes passed to ReconcileNodes |
+
+#### Deletion
+
+| ID | Test Case | Setup | Expected Result |
+|:---|:---|:---|:---|
+| UT-07 | Delete blocked by routing CRs | CUDNBgpRouting CR exists | Finalizer retained, requeues every 10s |
+| UT-08 | Delete successful | spec.aws set, mock platform, FRRConfiguration exists | Cleanup called, FRRConfigurations deleted, finalizer removed |
 
 ---
 
-## Routing Controller
+### Routing Controller
 
 Tests for `CUDNBgpRoutingReconciler` covering pre-checks, Phases 1-2, and deletion lifecycle.
 
-### Pre-checks
+#### Pre-checks
 
 | ID | Test Case | Setup | Expected Result |
 |:---|:---|:---|:---|
-| UT-08 | Duplicate network name | Another CUDNBgpRouting claims same spec.network.name | phase=Degraded, reason=DuplicateNetwork |
+| UT-09 | Duplicate network name | Another CUDNBgpRouting claims same spec.network.name | phase=Degraded, reason=DuplicateNetwork |
 
-### Reconciliation
-
-| ID | Test Case | Setup | Expected Result |
-|:---|:---|:---|:---|
-| UT-09 | Full reconcile | Config Ready | Namespace + CUDN + RouteAdvertisements created, phase=Ready with 2 conditions |
-
-### Deletion
+#### Reconciliation
 
 | ID | Test Case | Setup | Expected Result |
 |:---|:---|:---|:---|
-| UT-10 | Delete last removes RA | No other CUDNBgpRouting CRs | CUDN deleted, RouteAdvertisements deleted, finalizer removed |
-| UT-11 | Delete keeps RA when others exist | Another CUDNBgpRouting CR exists | CUDN deleted, RouteAdvertisements retained |
+| UT-10 | Full reconcile | Config Ready | Namespace + CUDN + RouteAdvertisements created, phase=Ready with 2 conditions |
+
+#### Deletion
+
+| ID | Test Case | Setup | Expected Result |
+|:---|:---|:---|:---|
+| UT-11 | Delete last removes RA | No other CUDNBgpRouting CRs | CUDN deleted, RouteAdvertisements deleted, finalizer removed |
+| UT-12 | Delete keeps RA when others exist | Another CUDNBgpRouting CR exists | CUDN deleted, RouteAdvertisements retained |
 
 ---
 
-## Helpers
+### Helpers
 
 Non-trivial helper logic tested in isolation. Simple CRUD helpers (create, delete) are covered implicitly by the controller tests above.
 
 | ID | Test Case | Verifies |
 |:---|:---|:---|
-| UT-12 | EnsureNamespace adopts existing | Adds required labels without removing existing ones |
-| UT-13 | EnsureFRRConfigurations BFD | BFD profile added when livenessDetection=bfd |
-| UT-14 | EnsureFRRConfigurations prunes stale | Stale managed configs deleted when AZ count reduced |
-| UT-15 | EnsureFRRConfigurations keeps unmanaged | User-owned FRRConfigurations not pruned |
+| UT-13 | EnsureNamespace adopts existing | Adds required labels without removing existing ones |
+| UT-14 | EnsureFRRConfigurations BFD | BFD profile added when livenessDetection=bfd |
+| UT-15 | EnsureFRRConfigurations prunes stale | Stale managed configs deleted when AZ count reduced |
+| UT-16 | EnsureFRRConfigurations keeps unmanaged | User-owned FRRConfigurations not pruned |
 
 ---
 

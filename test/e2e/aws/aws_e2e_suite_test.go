@@ -45,8 +45,6 @@ import (
 	networkingv1alpha1 "github.com/openshift/cudn-bgp-routing-operator/api/v1alpha1"
 )
 
-const operatorNamespace = "openshift-cudn-bgp-routing"
-
 var (
 	k8sClient client.Client
 	ec2Client *ec2.Client
@@ -124,9 +122,29 @@ var _ = BeforeSuite(func() {
 	clusterID = name
 	managedByTag = "cudn-bgp-routing-operator/" + clusterID
 
+	By("discovering route server endpoints from AWS")
 	endpointsByAZ = make(map[string][]string)
-	for _, ep := range bgpConfig.Spec.AWS.RouteServerEndpoints {
-		endpointsByAZ[ep.AvailabilityZone] = ep.EndpointIDs
+	for _, rsID := range bgpConfig.Spec.AWS.RouteServerIDs {
+		rseOut, rseErr := ec2Client.DescribeRouteServerEndpoints(context.Background(), &ec2.DescribeRouteServerEndpointsInput{
+			Filters: []ec2types.Filter{
+				{Name: aws.String("route-server-id"), Values: []string{rsID}},
+			},
+		})
+		Expect(rseErr).NotTo(HaveOccurred())
+		subnetIDs := make([]string, 0)
+		epBySubnet := make(map[string][]string)
+		for _, ep := range rseOut.RouteServerEndpoints {
+			sid := aws.ToString(ep.SubnetId)
+			epBySubnet[sid] = append(epBySubnet[sid], aws.ToString(ep.RouteServerEndpointId))
+			subnetIDs = append(subnetIDs, sid)
+		}
+		subOut, subErr := ec2Client.DescribeSubnets(context.Background(), &ec2.DescribeSubnetsInput{SubnetIds: subnetIDs})
+		Expect(subErr).NotTo(HaveOccurred())
+		for _, s := range subOut.Subnets {
+			az := aws.ToString(s.AvailabilityZone)
+			sid := aws.ToString(s.SubnetId)
+			endpointsByAZ[az] = append(endpointsByAZ[az], epBySubnet[sid]...)
+		}
 	}
 })
 

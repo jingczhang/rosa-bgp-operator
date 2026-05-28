@@ -6,31 +6,6 @@ spec:
   bgp:
     localASN: 65001
     livenessDetection: bfd
-    availabilityZones:
-      - nodeSelector:
-          topology.kubernetes.io/zone: us-east-1a
-          bgp_router_subnet: "1"
-        neighbors:
-          - address: 10.0.1.47
-            remoteASN: 64512
-          - address: 10.0.1.183
-            remoteASN: 64512
-      - nodeSelector:
-          topology.kubernetes.io/zone: us-east-1b
-          bgp_router_subnet: "2"
-        neighbors:
-          - address: 10.0.2.91
-            remoteASN: 64512
-          - address: 10.0.2.204
-            remoteASN: 64512
-      - nodeSelector:
-          topology.kubernetes.io/zone: us-east-1c
-          bgp_router_subnet: "3"
-        neighbors:
-          - address: 10.0.3.62
-            remoteASN: 64512
-          - address: 10.0.3.178
-            remoteASN: 64512
 
   routerNodeSelector:
     bgp_router: "true"
@@ -40,16 +15,5 @@ spec:
     credentialsSecret:
       name: cudn-bgp-aws-creds
       namespace: openshift-cudn-bgp-routing
-    routeServerEndpoints:
-      - availabilityZone: us-east-1a
-        endpointIDs:
-          - rse-0abc1111
-          - rse-0abc2222
-      - availabilityZone: us-east-1b
-        endpointIDs:
-          - rse-0def3333
-          - rse-0def4444
-      - availabilityZone: us-east-1c
-        endpointIDs:
-          - rse-0ghi5555
-          - rse-0ghi6666
+    routeServerIDs:               # terraform output vpc1-rs1-id
+      - rs-0abc1234

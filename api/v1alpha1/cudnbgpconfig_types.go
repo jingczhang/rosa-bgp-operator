@@ -41,6 +41,7 @@ const (
 const (
 	ConditionNetworkOperatorPatched  = "NetworkOperatorPatched"
 	ConditionFRRNamespaceReady       = "FRRNamespaceReady"
+	ConditionAWSEndpointsDiscovered  = "AWSEndpointsDiscovered"
 	ConditionFRRConfigurationApplied = "FRRConfigurationApplied"
 	ConditionAWSResourcesReconciled  = "AWSResourcesReconciled"
 )
@@ -63,15 +64,27 @@ type CredentialsSecretRef struct {
 	Namespace string `json:"namespace"`
 }
 
-type AWSRouteServerEndpoint struct {
-	AvailabilityZone string   `json:"availabilityZone"`
-	EndpointIDs      []string `json:"endpointIDs"`
+type AWSConfig struct {
+	Region            string               `json:"region"`
+	CredentialsSecret CredentialsSecretRef `json:"credentialsSecret"`
+	// +kubebuilder:validation:MinItems=1
+	RouteServerIDs []string `json:"routeServerIDs"`
 }
 
-type AWSConfig struct {
-	Region               string                   `json:"region"`
-	CredentialsSecret    CredentialsSecretRef     `json:"credentialsSecret"`
-	RouteServerEndpoints []AWSRouteServerEndpoint `json:"routeServerEndpoints"`
+type DiscoveredEndpoint struct {
+	EndpointID       string `json:"endpointID"`
+	AvailabilityZone string `json:"availabilityZone"`
+	Address          string `json:"address"`
+}
+
+type DiscoveredRouteServer struct {
+	RouteServerID string               `json:"routeServerID"`
+	RemoteASN     int64                `json:"remoteASN"`
+	Endpoints     []DiscoveredEndpoint `json:"endpoints,omitempty"`
+}
+
+type AWSStatus struct {
+	RouteServers []DiscoveredRouteServer `json:"routeServers,omitempty"`
 }
 
 type BGPConfig struct {
@@ -80,10 +93,12 @@ type BGPConfig struct {
 	LocalASN int64 `json:"localASN"`
 	// +kubebuilder:default="bgp-keepalive"
 	LivenessDetection LivenessDetectionType `json:"livenessDetection,omitempty"`
-	// +kubebuilder:validation:MinItems=1
-	AvailabilityZones []AvailabilityZone `json:"availabilityZones"`
+	// +optional
+	AvailabilityZones []AvailabilityZone `json:"availabilityZones,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:rule="!(has(self.aws) && has(self.bgp.availabilityZones) && size(self.bgp.availabilityZones) > 0)",message="spec.aws and spec.bgp.availabilityZones are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="has(self.aws) || (has(self.bgp.availabilityZones) && size(self.bgp.availabilityZones) > 0)",message="spec.bgp.availabilityZones is required when spec.aws is not configured"
 type CUDNBgpConfigSpec struct {
 	BGP                BGPConfig         `json:"bgp"`
 	RouterNodeSelector map[string]string `json:"routerNodeSelector"`
@@ -94,6 +109,7 @@ type CUDNBgpConfigStatus struct {
 	Phase              PhaseType          `json:"phase,omitempty"`
 	Conditions         []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 	ObservedGeneration int64              `json:"observedGeneration,omitempty"`
+	AWS                *AWSStatus         `json:"aws,omitempty"`
 }
 
 // +kubebuilder:object:root=true

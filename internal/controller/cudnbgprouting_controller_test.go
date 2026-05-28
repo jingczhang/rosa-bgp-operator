@@ -80,7 +80,6 @@ func newReadyCUDNBgpConfig() *networkingv1alpha1.CUDNBgpConfig {
 	}
 }
 
-
 func TestRoutingReconcile_FullReconcile(t *testing.T) {
 	routing := newTestCUDNBgpRouting()
 	config := newReadyCUDNBgpConfig()

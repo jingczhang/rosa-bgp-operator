@@ -17,6 +17,9 @@ import (
 )
 
 type ec2API interface {
+	DescribeRouteServers(ctx context.Context, input *ec2.DescribeRouteServersInput, optFns ...func(*ec2.Options)) (*ec2.DescribeRouteServersOutput, error)
+	DescribeRouteServerEndpoints(ctx context.Context, input *ec2.DescribeRouteServerEndpointsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeRouteServerEndpointsOutput, error)
+	DescribeSubnets(ctx context.Context, input *ec2.DescribeSubnetsInput, optFns ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error)
 	DescribeRouteServerPeers(ctx context.Context, input *ec2.DescribeRouteServerPeersInput, optFns ...func(*ec2.Options)) (*ec2.DescribeRouteServerPeersOutput, error)
 	CreateRouteServerPeer(ctx context.Context, input *ec2.CreateRouteServerPeerInput, optFns ...func(*ec2.Options)) (*ec2.CreateRouteServerPeerOutput, error)
 	DeleteRouteServerPeer(ctx context.Context, input *ec2.DeleteRouteServerPeerInput, optFns ...func(*ec2.Options)) (*ec2.DeleteRouteServerPeerOutput, error)
@@ -32,7 +35,8 @@ type stsAPI interface {
 type Platform struct {
 	ec2Client         ec2API
 	region            string
-	endpointsByAZ     map[string][]string // AZ → Route Server endpoint IDs
+	routeServerIDs    []string
+	endpointsByAZ     map[string][]string // populated by DiscoverEndpoints
 	localASN          int64
 	livenessDetection string
 	clusterID         string
@@ -40,7 +44,7 @@ type Platform struct {
 
 type Config struct {
 	Region            string
-	EndpointsByAZ     map[string][]string // AZ → Route Server endpoint IDs
+	RouteServerIDs    []string
 	LocalASN          int64
 	LivenessDetection string
 	AccessKeyID       string
@@ -84,7 +88,7 @@ func newPlatform(ctx context.Context, cfg Config, ec2Override ec2API, stsOverrid
 	return &Platform{
 		ec2Client:         ec2Client,
 		region:            cfg.Region,
-		endpointsByAZ:     cfg.EndpointsByAZ,
+		routeServerIDs:    cfg.RouteServerIDs,
 		localASN:          cfg.LocalASN,
 		livenessDetection: cfg.LivenessDetection,
 		clusterID:         cfg.ClusterID,
