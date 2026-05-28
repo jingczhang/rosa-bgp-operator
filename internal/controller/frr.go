@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -28,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	networkingv1alpha1 "github.com/openshift/cudn-bgp-routing-operator/api/v1alpha1"
+	"github.com/openshift/cudn-bgp-routing-operator/internal/platform"
 )
 
 func IsFRRReady(ctx context.Context, c client.Client) (bool, error) {
@@ -85,6 +87,57 @@ func EnsureFRRConfigurations(ctx context.Context, c client.Client, config *netwo
 		}
 	}
 	return nil
+}
+
+func EnsureFRRConfigurationsFromDiscovery(
+	ctx context.Context,
+	c client.Client,
+	config *networkingv1alpha1.CUDNBgpConfig,
+	dr *platform.DiscoveryResult,
+) (int, error) {
+	azNames := make([]string, 0, len(dr.NeighborsByAZ))
+	for az := range dr.NeighborsByAZ {
+		azNames = append(azNames, az)
+	}
+	sort.Strings(azNames)
+
+	expected := make(map[string]bool, len(azNames))
+	for i, az := range azNames {
+		name := fmt.Sprintf("%s%d", FRRConfigNamePrefix, i+1)
+		expected[name] = true
+
+		neighbors := dr.NeighborsByAZ[az]
+		syntheticAZ := networkingv1alpha1.AvailabilityZone{
+			NodeSelector: map[string]string{"topology.kubernetes.io/zone": az},
+		}
+		for _, n := range neighbors {
+			syntheticAZ.Neighbors = append(syntheticAZ.Neighbors, networkingv1alpha1.BGPNeighbor{
+				Address:   n.Address,
+				RemoteASN: n.ASN,
+			})
+		}
+
+		if err := ensureSingleFRRConfiguration(ctx, c, config, syntheticAZ, name); err != nil {
+			return 0, fmt.Errorf("AZ %s: %w", az, err)
+		}
+	}
+
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(FRRConfigurationGVK)
+	if err := c.List(ctx, list,
+		client.InNamespace(FRRNamespace),
+		client.MatchingLabels{LabelManagedBy: LabelManagedByVal},
+	); err != nil {
+		return 0, err
+	}
+	for i := range list.Items {
+		if !expected[list.Items[i].GetName()] {
+			if err := c.Delete(ctx, &list.Items[i]); err != nil && !apierrors.IsNotFound(err) {
+				return 0, fmt.Errorf("pruning stale %s: %w", list.Items[i].GetName(), err)
+			}
+		}
+	}
+	return len(azNames), nil
 }
 
 func ensureSingleFRRConfiguration(

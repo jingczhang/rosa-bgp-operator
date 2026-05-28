@@ -6,50 +6,48 @@ spec:
   bgp:
     localASN: 65001                  # terraform output rosa_bgp_asn
     livenessDetection: bgp-keepalive # bfd | bgp-keepalive (default)
-    availabilityZones:
-      - nodeSelector:
-          topology.kubernetes.io/zone: us-east-1a
-          bgp_router_subnet: "1"
-        neighbors:
-          - address: 10.0.1.47       # terraform output vpc1-rs1-subnet1-ep1_ip
-            remoteASN: 64512         # terraform output vpc1-rs1-asn
-          - address: 10.0.1.183      # terraform output vpc1-rs1-subnet1-ep2_ip
-            remoteASN: 64512
-      - nodeSelector:
-          topology.kubernetes.io/zone: us-east-1b
-          bgp_router_subnet: "2"
-        neighbors:
-          - address: 10.0.2.91       # terraform output vpc1-rs1-subnet2-ep1_ip
-            remoteASN: 64512
-          - address: 10.0.2.204      # terraform output vpc1-rs1-subnet2-ep2_ip
-            remoteASN: 64512
-      - nodeSelector:
-          topology.kubernetes.io/zone: us-east-1c
-          bgp_router_subnet: "3"
-        neighbors:
-          - address: 10.0.3.62       # terraform output vpc1-rs1-subnet3-ep1_ip
-            remoteASN: 64512
-          - address: 10.0.3.178      # terraform output vpc1-rs1-subnet3-ep2_ip
-            remoteASN: 64512
 
   routerNodeSelector:
     bgp_router: "true"
 
+  # --- AWS auto-discovery mode ---
+  # When spec.aws is set, the operator discovers Route Server endpoints,
+  # neighbor IPs, and remote ASN automatically. Do NOT set
+  # spec.bgp.availabilityZones in this mode.
   aws:
-    region: us-east-1
+    region: us-east-1                # terraform output aws_region
     credentialsSecret:
       name: cudn-bgp-aws-creds
       namespace: openshift-cudn-bgp-routing
-    routeServerEndpoints:
-      - availabilityZone: us-east-1a
-        endpointIDs:               # terraform output vpc1-rs1-subnet1-endpoint_ids
-          - rse-0abc1111
-          - rse-0abc2222
-      - availabilityZone: us-east-1b
-        endpointIDs:               # terraform output vpc1-rs1-subnet2-endpoint_ids
-          - rse-0def3333
-          - rse-0def4444
-      - availabilityZone: us-east-1c
-        endpointIDs:               # terraform output vpc1-rs1-subnet3-endpoint_ids
-          - rse-0ghi5555
-          - rse-0ghi6666
+    routeServerIDs:                  # terraform output vpc1-rs1-id
+      - rs-0abc1234
+
+  # --- Without cloud integration ---
+  # When spec.aws is absent, specify neighbors explicitly.
+  # bgp:
+  #   localASN: 65001
+  #   availabilityZones:
+  #     - nodeSelector:
+  #         topology.kubernetes.io/zone: us-east-1a
+  #         bgp_router_subnet: "1"
+  #       neighbors:
+  #         - address: 10.0.1.47
+  #           remoteASN: 64512
+  #         - address: 10.0.1.183
+  #           remoteASN: 64512
+  #     - nodeSelector:
+  #         topology.kubernetes.io/zone: us-east-1b
+  #         bgp_router_subnet: "2"
+  #       neighbors:
+  #         - address: 10.0.2.91
+  #           remoteASN: 64512
+  #         - address: 10.0.2.204
+  #           remoteASN: 64512
+  #     - nodeSelector:
+  #         topology.kubernetes.io/zone: us-east-1c
+  #         bgp_router_subnet: "3"
+  #       neighbors:
+  #         - address: 10.0.3.62
+  #           remoteASN: 64512
+  #         - address: 10.0.3.178
+  #           remoteASN: 64512

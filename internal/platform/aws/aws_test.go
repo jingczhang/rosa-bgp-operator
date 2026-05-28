@@ -27,6 +27,9 @@ func (m *mockSTS) GetCallerIdentity(_ context.Context, _ *sts.GetCallerIdentityI
 }
 
 type mockEC2 struct {
+	describeRSFunc     func(*ec2.DescribeRouteServersInput) (*ec2.DescribeRouteServersOutput, error)
+	describeRSEFunc    func(*ec2.DescribeRouteServerEndpointsInput) (*ec2.DescribeRouteServerEndpointsOutput, error)
+	describeSubFunc    func(*ec2.DescribeSubnetsInput) (*ec2.DescribeSubnetsOutput, error)
 	describePeersFunc  func(*ec2.DescribeRouteServerPeersInput) (*ec2.DescribeRouteServerPeersOutput, error)
 	createPeerFunc     func(*ec2.CreateRouteServerPeerInput) (*ec2.CreateRouteServerPeerOutput, error)
 	deletePeerFunc     func(*ec2.DeleteRouteServerPeerInput) (*ec2.DeleteRouteServerPeerOutput, error)
@@ -38,6 +41,27 @@ type mockEC2 struct {
 	deletePeerCalls  []*ec2.DeleteRouteServerPeerInput
 	createTagsCalls  []*ec2.CreateTagsInput
 	modifyENICalls   []*ec2.ModifyNetworkInterfaceAttributeInput
+}
+
+func (m *mockEC2) DescribeRouteServers(_ context.Context, input *ec2.DescribeRouteServersInput, _ ...func(*ec2.Options)) (*ec2.DescribeRouteServersOutput, error) {
+	if m.describeRSFunc != nil {
+		return m.describeRSFunc(input)
+	}
+	return &ec2.DescribeRouteServersOutput{}, nil
+}
+
+func (m *mockEC2) DescribeRouteServerEndpoints(_ context.Context, input *ec2.DescribeRouteServerEndpointsInput, _ ...func(*ec2.Options)) (*ec2.DescribeRouteServerEndpointsOutput, error) {
+	if m.describeRSEFunc != nil {
+		return m.describeRSEFunc(input)
+	}
+	return &ec2.DescribeRouteServerEndpointsOutput{}, nil
+}
+
+func (m *mockEC2) DescribeSubnets(_ context.Context, input *ec2.DescribeSubnetsInput, _ ...func(*ec2.Options)) (*ec2.DescribeSubnetsOutput, error) {
+	if m.describeSubFunc != nil {
+		return m.describeSubFunc(input)
+	}
+	return &ec2.DescribeSubnetsOutput{}, nil
 }
 
 func (m *mockEC2) DescribeRouteServerPeers(_ context.Context, input *ec2.DescribeRouteServerPeersInput, _ ...func(*ec2.Options)) (*ec2.DescribeRouteServerPeersOutput, error) {
@@ -86,14 +110,14 @@ func (m *mockEC2) ModifyNetworkInterfaceAttribute(_ context.Context, input *ec2.
 	return &ec2.ModifyNetworkInterfaceAttributeOutput{}, nil
 }
 
-// --- Credential Validation ---
+// --- UT-AWS-01 to UT-AWS-02: Credential Validation ---
 
 func TestNew_ValidCredentials(t *testing.T) {
 	p, err := newPlatform(context.Background(), Config{
 		AccessKeyID:    "AKID",
 		SecretAccessKey: "secret",
 		Region:         "us-east-1",
-		EndpointsByAZ:  map[string][]string{"us-east-1a": {"ep-1"}},
+		RouteServerIDs: []string{"rs-1"},
 		LocalASN:       65001,
 	}, &mockEC2{}, &mockSTS{})
 
@@ -132,7 +156,7 @@ func TestNew_InvalidCredentials(t *testing.T) {
 	}
 }
 
-// --- UT-04 to UT-05: Provider ID Parsing ---
+// --- UT-AWS-03 to UT-AWS-04: Provider ID Parsing ---
 
 func TestParseProviderID_Valid(t *testing.T) {
 	instanceID, az, err := ParseProviderID("aws:///us-east-1a/i-0abc123")
@@ -164,12 +188,13 @@ func TestParseProviderID_Invalid(t *testing.T) {
 	}
 }
 
-// --- UT-06 to UT-10: Route Server Peer Reconciliation ---
+// --- UT-AWS-09 to UT-AWS-13: Route Server Peer Reconciliation ---
 
 func newTestPlatform(mock *mockEC2) *Platform {
 	return &Platform{
-		ec2Client: mock,
-		region:    "us-east-1",
+		ec2Client:      mock,
+		region:         "us-east-1",
+		routeServerIDs: []string{"rs-1"},
 		endpointsByAZ: map[string][]string{
 			"us-east-1a": {"ep-a1", "ep-a2"},
 			"us-east-1b": {"ep-b1", "ep-b2"},
@@ -370,7 +395,7 @@ func TestCleanup_DeletesAllManagedPeers(t *testing.T) {
 	}
 }
 
-// --- UT-11 to UT-13: SourceDestCheck ---
+// --- UT-AWS-14 to UT-AWS-16: SourceDestCheck ---
 
 func TestDisableSourceDestCheck_EnabledToDisabled(t *testing.T) {
 	mock := &mockEC2{
@@ -462,5 +487,166 @@ func TestDisableSourceDestCheck_NoPrimaryENI(t *testing.T) {
 	err := p.disableSourceDestCheck(context.Background(), nodes)
 	if err == nil {
 		t.Fatal("expected error when no primary ENI found")
+	}
+}
+
+// --- UT-AWS-05 to UT-AWS-08: Endpoint Discovery ---
+
+func newDiscoveryMock() *mockEC2 {
+	return &mockEC2{
+		describeRSFunc: func(input *ec2.DescribeRouteServersInput) (*ec2.DescribeRouteServersOutput, error) {
+			return &ec2.DescribeRouteServersOutput{
+				RouteServers: []ec2types.RouteServer{
+					{RouteServerId: aws.String(input.RouteServerIds[0]), AmazonSideAsn: aws.Int64(64512)},
+				},
+			}, nil
+		},
+		describeRSEFunc: func(_ *ec2.DescribeRouteServerEndpointsInput) (*ec2.DescribeRouteServerEndpointsOutput, error) {
+			return &ec2.DescribeRouteServerEndpointsOutput{
+				RouteServerEndpoints: []ec2types.RouteServerEndpoint{
+					{RouteServerEndpointId: aws.String("rse-a1"), SubnetId: aws.String("subnet-a"), EniAddress: aws.String("10.0.1.47")},
+					{RouteServerEndpointId: aws.String("rse-a2"), SubnetId: aws.String("subnet-a"), EniAddress: aws.String("10.0.1.183")},
+					{RouteServerEndpointId: aws.String("rse-b1"), SubnetId: aws.String("subnet-b"), EniAddress: aws.String("10.0.2.91")},
+					{RouteServerEndpointId: aws.String("rse-b2"), SubnetId: aws.String("subnet-b"), EniAddress: aws.String("10.0.2.145")},
+					{RouteServerEndpointId: aws.String("rse-c1"), SubnetId: aws.String("subnet-c"), EniAddress: aws.String("10.0.3.62")},
+					{RouteServerEndpointId: aws.String("rse-c2"), SubnetId: aws.String("subnet-c"), EniAddress: aws.String("10.0.3.118")},
+				},
+			}, nil
+		},
+		describeSubFunc: func(_ *ec2.DescribeSubnetsInput) (*ec2.DescribeSubnetsOutput, error) {
+			return &ec2.DescribeSubnetsOutput{
+				Subnets: []ec2types.Subnet{
+					{SubnetId: aws.String("subnet-a"), AvailabilityZone: aws.String("us-east-1a")},
+					{SubnetId: aws.String("subnet-b"), AvailabilityZone: aws.String("us-east-1b")},
+					{SubnetId: aws.String("subnet-c"), AvailabilityZone: aws.String("us-east-1c")},
+				},
+			}, nil
+		},
+	}
+}
+
+func TestDiscoverEndpoints_Success(t *testing.T) {
+	mock := newDiscoveryMock()
+	p := &Platform{
+		ec2Client:      mock,
+		routeServerIDs: []string{"rs-1"},
+	}
+
+	result, err := p.DiscoverEndpoints(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.RouteServers) != 1 {
+		t.Fatalf("expected 1 route server, got %d", len(result.RouteServers))
+	}
+	if result.RouteServers[0].RemoteASN != 64512 {
+		t.Errorf("expected ASN 64512, got %d", result.RouteServers[0].RemoteASN)
+	}
+	if len(result.RouteServers[0].Endpoints) != 6 {
+		t.Fatalf("expected 6 endpoints, got %d", len(result.RouteServers[0].Endpoints))
+	}
+	if len(result.NeighborsByAZ) != 3 {
+		t.Fatalf("expected 3 AZs in neighbors, got %d", len(result.NeighborsByAZ))
+	}
+	for _, az := range []string{"us-east-1a", "us-east-1b", "us-east-1c"} {
+		if len(result.NeighborsByAZ[az]) != 2 {
+			t.Errorf("expected 2 neighbors in %s, got %d", az, len(result.NeighborsByAZ[az]))
+		}
+	}
+	if len(p.endpointsByAZ) != 3 {
+		t.Errorf("expected endpointsByAZ populated with 3 AZs, got %d", len(p.endpointsByAZ))
+	}
+}
+
+func TestDiscoverEndpoints_RouteServerNotFound(t *testing.T) {
+	mock := &mockEC2{
+		describeRSFunc: func(_ *ec2.DescribeRouteServersInput) (*ec2.DescribeRouteServersOutput, error) {
+			return &ec2.DescribeRouteServersOutput{}, nil
+		},
+	}
+	p := &Platform{
+		ec2Client:      mock,
+		routeServerIDs: []string{"rs-nonexistent"},
+	}
+
+	_, err := p.DiscoverEndpoints(context.Background())
+	if err == nil {
+		t.Fatal("expected error for non-existent route server")
+	}
+}
+
+func TestDiscoverEndpoints_MultipleRouteServers(t *testing.T) {
+	mock := &mockEC2{
+		describeRSFunc: func(input *ec2.DescribeRouteServersInput) (*ec2.DescribeRouteServersOutput, error) {
+			asn := int64(64512)
+			if input.RouteServerIds[0] == "rs-2" {
+				asn = 64513
+			}
+			return &ec2.DescribeRouteServersOutput{
+				RouteServers: []ec2types.RouteServer{
+					{RouteServerId: aws.String(input.RouteServerIds[0]), AmazonSideAsn: aws.Int64(asn)},
+				},
+			}, nil
+		},
+		describeRSEFunc: func(input *ec2.DescribeRouteServerEndpointsInput) (*ec2.DescribeRouteServerEndpointsOutput, error) {
+			rsID := ""
+			for _, f := range input.Filters {
+				if aws.ToString(f.Name) == "route-server-id" {
+					rsID = f.Values[0]
+				}
+			}
+			if rsID == "rs-1" {
+				return &ec2.DescribeRouteServerEndpointsOutput{
+					RouteServerEndpoints: []ec2types.RouteServerEndpoint{
+						{RouteServerEndpointId: aws.String("rse-1a"), SubnetId: aws.String("subnet-a"), EniAddress: aws.String("10.0.1.10")},
+					},
+				}, nil
+			}
+			return &ec2.DescribeRouteServerEndpointsOutput{
+				RouteServerEndpoints: []ec2types.RouteServerEndpoint{
+					{RouteServerEndpointId: aws.String("rse-2a"), SubnetId: aws.String("subnet-a"), EniAddress: aws.String("10.0.1.20")},
+				},
+			}, nil
+		},
+		describeSubFunc: func(_ *ec2.DescribeSubnetsInput) (*ec2.DescribeSubnetsOutput, error) {
+			return &ec2.DescribeSubnetsOutput{
+				Subnets: []ec2types.Subnet{
+					{SubnetId: aws.String("subnet-a"), AvailabilityZone: aws.String("us-east-1a")},
+				},
+			}, nil
+		},
+	}
+
+	p := &Platform{
+		ec2Client:      mock,
+		routeServerIDs: []string{"rs-1", "rs-2"},
+	}
+
+	result, err := p.DiscoverEndpoints(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(result.RouteServers) != 2 {
+		t.Fatalf("expected 2 route servers, got %d", len(result.RouteServers))
+	}
+	if len(result.NeighborsByAZ["us-east-1a"]) != 2 {
+		t.Errorf("expected 2 neighbors in us-east-1a (from 2 RS), got %d", len(result.NeighborsByAZ["us-east-1a"]))
+	}
+}
+
+func TestDiscoverEndpoints_APIFailure(t *testing.T) {
+	mock := &mockEC2{
+		describeRSFunc: func(_ *ec2.DescribeRouteServersInput) (*ec2.DescribeRouteServersOutput, error) {
+			return nil, errors.New("ec2 API failure")
+		},
+	}
+	p := &Platform{
+		ec2Client:      mock,
+		routeServerIDs: []string{"rs-1"},
+	}
+
+	_, err := p.DiscoverEndpoints(context.Background())
+	if err == nil {
+		t.Fatal("expected error on API failure")
 	}
 }

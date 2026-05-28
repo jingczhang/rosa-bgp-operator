@@ -16,8 +16,9 @@ Test strategy for the CUDN BGP Routing Operator. The operator has two layers of 
                    │                              │  │                                      │
   Unit tests       │  internal/controller/*_test  │  │  internal/platform/<provider>/*_test │
                    │  • Config controller         │  │  • Provider ID → instance ID + AZ    │
-                   │    Phases 1-3 + Phase 4      │  │  • Peer reconciliation (mocked API)  │
-                   │    (mocked CloudPlatform)    │  │  • Forwarding fix (mocked API)       │
+                   │    Phases 1-5 (mocked        │  │  • Endpoint discovery (mocked API)   │
+                   │    CloudPlatform)            │  │  • Peer reconciliation (mocked API)  │
+                   │                              │  │  • Forwarding fix (mocked API)       │
                    │  • Helpers (NS, CUDN, FRR,   │  │                                      │
                    │    RouteAdvertisements)      │  │                                      │
                    │  • Routing controller        │  │                                      │
@@ -46,7 +47,7 @@ Two layers, ordered by infrastructure cost and feedback speed:
 ```
 internal/
   controller/
-    cudnbgpconfig_controller_test.go   ← config controller (Phases 1-4, mocked CloudPlatform)
+    cudnbgpconfig_controller_test.go   ← config controller (Phases 1-5, mocked CloudPlatform)
     cudnbgprouting_controller_test.go  ← routing controller
     helpers_test.go                    ← helpers (NS, CUDN, FRR, RouteAdvertisements)
   platform/
@@ -59,12 +60,12 @@ internal/
 ```
 test/e2e/
   e2e_suite_test.go
-  e2e_test.go                          ← shared (operator starts, metrics)
+  e2e_test.go                          ← shared (operator starts)
   aws/
-    aws_suite_test.go
-    aws_test.go                        ← AWS E2E (requires credentials secret)
+    aws_e2e_suite_test.go
+    aws_e2e_test.go                    ← AWS E2E (requires credentials secret)
   manifests/
-    poc/                               ← factory default profile (3-AZ PoC)
+    poc/                               ← PoC profile (CUDNBgpConfig + CUDNBgpRouting)
       cudnbgpconfig.yaml
       cudnbgprouting.yaml
 ```
@@ -73,8 +74,8 @@ E2E tests read CR manifests from a profile directory under `test/e2e/manifests/<
 
 1. Deploys the operator
 2. Applies CRs from the selected profile directory
-3. Discovers expected state by parsing the applied CRs + listing cluster nodes
-4. Asserts relative outcomes (e.g., "peers per endpoint == router nodes in that AZ")
+3. Discovers expected state from the operator's `status.aws.routeServers` (auto-discovered endpoints) + listing cluster nodes
+4. Asserts relative outcomes (e.g., "peers per endpoint == router nodes in that AZ", "status.aws contains discovered endpoints for all Route Server IDs")
 
 Provider-independent E2E tests ignore `spec.aws` (or any provider section) in the CRs. Provider-specific tests use the full CR.
 
@@ -89,23 +90,25 @@ Provider-independent E2E tests ignore `spec.aws` (or any provider section) in th
 
 ## Platform Interface
 
-The `CloudPlatform` interface (`internal/platform/platform.go`) defines two methods:
+The `CloudPlatform` interface (`internal/platform/platform.go`) defines three methods:
 
 ```go
 type CloudPlatform interface {
+    DiscoverEndpoints(ctx context.Context) (*DiscoveryResult, error)
     ReconcileNodes(ctx context.Context, nodes []RouterNode) error
     Cleanup(ctx context.Context) error
 }
 ```
 
-Every cloud provider implements this interface. Each provider's test plan maps to the same set of concerns:
+`DiscoverEndpoints` returns the discovered Route Server endpoints, their BGP neighbor addresses, AZs, and remote ASN. This data drives FRR configuration generation (Phase 4) and is written to CR status. Every cloud provider implements this interface. Each provider's test plan maps to the same set of concerns:
 
 | Test category | Interface concept | AWS | GCP (future) | Azure (future) |
 |:---|:---|:---|:---|:---|
+| Platform initialization | `New()` constructor | Static credentials + `sts:GetCallerIdentity` validation | Workload Identity | Workload Identity |
+| Provider ID → instance ID + AZ | `RouterNode.ProviderID` | `aws:///zone/instance` | `gce:///project/zone/instance` | `azure:///...` |
+| Endpoint discovery | `DiscoverEndpoints` | DescribeRouteServers + DescribeRouteServerEndpoints + DescribeSubnets | Cloud Router interface listing | Azure Route Server IP config |
 | Peer reconciliation | `ReconcileNodes` — peering | VPC Route Server peers | Cloud Router peers | Azure Route Server peers |
 | Forwarding fix | `ReconcileNodes` — forwarding | SourceDestCheck=false | canIpForward=true | IP forwarding=enabled |
-| Provider ID → instance ID + AZ | `RouterNode.ProviderID` | `aws:///zone/instance` | `gce:///project/zone/instance` | `azure:///...` |
-| Platform initialization | `New()` constructor | Static credentials + `sts:GetCallerIdentity` validation | Workload Identity | Workload Identity |
 
 ## Test Plans
 

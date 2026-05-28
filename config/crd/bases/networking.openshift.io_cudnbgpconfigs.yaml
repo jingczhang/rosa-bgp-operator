@@ -60,24 +60,15 @@ spec:
                     type: object
                   region:
                     type: string
-                  routeServerEndpoints:
+                  routeServerIDs:
                     items:
-                      properties:
-                        availabilityZone:
-                          type: string
-                        endpointIDs:
-                          items:
-                            type: string
-                          type: array
-                      required:
-                      - availabilityZone
-                      - endpointIDs
-                      type: object
+                      type: string
+                    minItems: 1
                     type: array
                 required:
                 - credentialsSecret
                 - region
-                - routeServerEndpoints
+                - routeServerIDs
                 type: object
               bgp:
                 properties:
@@ -108,7 +99,6 @@ spec:
                       - neighbors
                       - nodeSelector
                       type: object
-                    minItems: 1
                     type: array
                   livenessDetection:
                     default: bgp-keepalive
@@ -122,7 +112,6 @@ spec:
                     minimum: 0
                     type: integer
                 required:
-                - availabilityZones
                 - localASN
                 type: object
               routerNodeSelector:
@@ -133,8 +122,44 @@ spec:
             - bgp
             - routerNodeSelector
             type: object
+            x-kubernetes-validations:
+            - message: spec.aws and spec.bgp.availabilityZones are mutually exclusive
+              rule: "!(has(self.aws) && has(self.bgp.availabilityZones) && size(self.bgp.availabilityZones) > 0)"
+            - message: spec.bgp.availabilityZones is required when spec.aws is not configured
+              rule: "has(self.aws) || (has(self.bgp.availabilityZones) && size(self.bgp.availabilityZones) > 0)"
           status:
             properties:
+              aws:
+                properties:
+                  routeServers:
+                    items:
+                      properties:
+                        endpoints:
+                          items:
+                            properties:
+                              address:
+                                type: string
+                              availabilityZone:
+                                type: string
+                              endpointID:
+                                type: string
+                            required:
+                            - address
+                            - availabilityZone
+                            - endpointID
+                            type: object
+                          type: array
+                        remoteASN:
+                          format: int64
+                          type: integer
+                        routeServerID:
+                          type: string
+                      required:
+                      - remoteASN
+                      - routeServerID
+                      type: object
+                    type: array
+                type: object
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current

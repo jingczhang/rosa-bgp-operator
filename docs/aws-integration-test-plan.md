@@ -16,20 +16,21 @@ Based on the rosa-bgp PoC configuration:
 | Region | us-east-1 |
 | Availability Zones | us-east-1a, us-east-1b, us-east-1c |
 | Local BGP ASN | 65001 |
-| Remote BGP ASN | 64512 (Route Server ASN) |
-| Route Server endpoints | 2 per AZ (6 total) |
+| Remote BGP ASN | 64512 (Route Server ASN, auto-discovered) |
+| Route Server IDs | 1 (with 2 endpoints per AZ, 6 total, auto-discovered) |
 | Liveness detection | bfd |
 | BGP router nodes | 1 per AZ (3 total), labeled `bgp_router: "true"` |
 | CUDN network | name=`prod`, CIDR from Terraform outputs |
 
-Unit tests hardcode these values with mocked EC2/STS clients — no credentials or cluster required.
+Unit tests hardcode these values with mocked EC2/STS clients — no credentials or cluster required. Discovery API calls (`DescribeRouteServers`, `DescribeRouteServerEndpoints`, `DescribeSubnets`) are mocked alongside the existing peer and instance mocks.
 
-E2E tests read CR manifests from a profile directory (`test/e2e/manifests/<profile>/`). The `poc` profile ships with the above configuration. The test framework derives expected state from the applied CRs and cluster nodes — no topology is hardcoded in the test code.
+E2E tests read CR manifests from a profile directory (`test/e2e/manifests/<profile>/`). AWS E2E tests require `spec.aws` to be set. The `poc` profile is provided as an example; a custom profile matching the actual ROSA deployment is needed for real testing. The test framework derives expected state from the operator's discovered `status.aws.routeServers` and cluster nodes — no topology is hardcoded in the test code.
 
 | Component | How discovered |
 |:---|:---|
-| Region, endpoints, ASN | From `CUDNBgpConfig` CR in the profile |
-| Router nodes + AZs | Listed from cluster using CR's nodeSelector |
+| Region, Route Server IDs | From `CUDNBgpConfig` CR in the profile |
+| Endpoints, neighbor IPs, remote ASN, AZs | Auto-discovered by the operator from Route Server IDs |
+| Router nodes + AZs | Listed from cluster using CR's routerNodeSelector + `topology.kubernetes.io/zone` |
 | AWS credentials | From the Secret referenced by the CR |
 | Infrastructure | Provisioned externally (e.g., [rosa-bgp Terraform](https://github.com/msemanrh/rosa-bgp)) |
 
@@ -53,23 +54,32 @@ Test the AWS platform package in isolation using a mocked EC2 client interface. 
 | UT-AWS-03 | Valid provider ID | `aws:///us-east-1a/i-0abc123` | instanceID=`i-0abc123`, az=`us-east-1a` |
 | UT-AWS-04 | Invalid provider IDs (defensive test only) | `gce:///zone/instance`, `aws:///us-east-1a/`, `aws:////i-0abc123`, `aws://something` | Error for each |
 
+### Route Server Endpoint Discovery
+
+| ID | Test Case | Setup | Expected Result |
+|:---|:---|:---|:---|
+| UT-AWS-05 | Discover endpoints for single Route Server | 1 RS with 6 endpoints across 3 subnets | Endpoints grouped by AZ (derived from DescribeSubnets), ENI addresses and remote ASN returned |
+| UT-AWS-06 | Discover endpoints for multiple Route Servers | 2 RS IDs, each with endpoints across 3 subnets | All endpoints from both RSs merged into per-AZ map |
+| UT-AWS-07 | Route Server not found | Invalid RS ID, DescribeRouteServers returns empty | Error returned with invalid Route Server ID |
+| UT-AWS-08 | API failure | DescribeRouteServers returns error | Error propagated |
+
 ### Route Server Peer Reconciliation
 
 | ID | Test Case | Setup | Expected Result |
 |:---|:---|:---|:---|
-| UT-AWS-05 | Multi-AZ create | Empty peer list, nodes across 3 AZs | Peers created only on correct AZ endpoints, correct ASN, tagged `managed-by: cudn-bgp-routing-operator/<infrastructureName>` |
-| UT-AWS-06 | Adopt pre-existing untagged peer | Untagged peer exists with same IP as a desired node | No create call; peer adopted via CreateTags with `managed-by: cudn-bgp-routing-operator/<infrastructureName>` |
-| UT-AWS-07 | Delete stale peer | 1 managed peer, no desired nodes | Peer deleted, no create calls |
-| UT-AWS-08 | BFD liveness detection | livenessDetection=bfd | CreateRouteServerPeer includes BFD peer liveness mode |
-| UT-AWS-09 | Cleanup deletes all managed peers | 6 managed peers across 3 AZs | All 6 deleted |
+| UT-AWS-09 | Multi-AZ create | Empty peer list, nodes across 3 AZs, endpoints from discovery | Peers created only on correct AZ endpoints, correct ASN, tagged `managed-by: cudn-bgp-routing-operator/<infrastructureName>` |
+| UT-AWS-10 | Adopt pre-existing untagged peer | Untagged peer exists with same IP as a desired node | No create call; peer adopted via CreateTags with `managed-by: cudn-bgp-routing-operator/<infrastructureName>` |
+| UT-AWS-11 | Delete stale peer | 1 managed peer, no desired nodes | Peer deleted, no create calls |
+| UT-AWS-12 | BFD liveness detection | livenessDetection=bfd | CreateRouteServerPeer includes BFD peer liveness mode |
+| UT-AWS-13 | Cleanup deletes all managed peers | 6 managed peers across 3 AZs | All 6 deleted |
 
 ### SourceDestCheck
 
 | ID | Test Case | Setup | Expected Result |
 |:---|:---|:---|:---|
-| UT-AWS-10 | Disable on node with check enabled | SourceDestCheck=true on primary ENI | ModifyNetworkInterfaceAttribute called with false |
-| UT-AWS-11 | No-op when already disabled | SourceDestCheck=false on primary ENI | No modify call |
-| UT-AWS-12 | No primary ENI found (defensive test only) | Instance with no device index 0 | Error returned |
+| UT-AWS-14 | Disable on node with check enabled | SourceDestCheck=true on primary ENI | ModifyNetworkInterfaceAttribute called with false |
+| UT-AWS-15 | No-op when already disabled | SourceDestCheck=false on primary ENI | No modify call |
+| UT-AWS-16 | No primary ENI found (defensive test only) | Instance with no device index 0 | Error returned |
 
 ---
 
@@ -83,7 +93,7 @@ Full end-to-end tests running the operator on a ROSA HCP cluster with VPC Route 
 
 | ID | Test Case | Action | Verification |
 |:---|:---|:---|:---|
-| E2E-AWS-01 | Full stack reconcile | Deploy operator, apply CUDNBgpConfig and CUDNBgpRouting CRs | Operator Running; config phase=Ready; 3 FRRConfigurations created; Route Server peers exist per AZ; SourceDestCheck=false on router nodes; routing phase=Ready with namespace + CUDN + RouteAdvertisements; FRR pods show established BGP sessions |
+| E2E-AWS-01 | Full stack reconcile | Deploy operator, apply CUDNBgpConfig and CUDNBgpRouting CRs | Operator Running; config phase=Ready; `status.aws.routeServers` populated with discovered endpoints, IPs, AZs, and remote ASN; FRRConfigurations created per discovered AZ with discovered neighbor addresses; Route Server peers exist per AZ; SourceDestCheck=false on router nodes; routing phase=Ready with namespace + CUDN + RouteAdvertisements; FRR pods show established BGP sessions |
 
 ### Node Lifecycle
 
@@ -130,7 +140,7 @@ Full operator lifecycle on a ROSA HCP cluster with VPC Route Server infrastructu
 # - AWS credentials secret created in openshift-cudn-bgp-routing namespace
 # - Infrastructure provisioned (Terraform or equivalent)
 
-# Profile is mandatory — specifies which CRs to apply
+# Profile is mandatory — specifies which CRs to apply (must have spec.aws)
 make test-e2e-aws poc
 make test-e2e-aws my-cluster
 ```

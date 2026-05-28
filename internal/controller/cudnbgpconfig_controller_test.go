@@ -190,11 +190,41 @@ func TestConfigReconcile_DeleteBlockedByRouting(t *testing.T) {
 // --- Phase 4: Controller AWS Integration (Mocked Platform) ---
 
 type mockPlatform struct {
+	discoverResult       *platform.DiscoveryResult
+	discoverErr          error
+	discoverCalled       bool
 	reconcileNodesCalled bool
 	reconcileNodesArgs   []platform.RouterNode
 	reconcileNodesErr    error
 	cleanupCalled        bool
 	cleanupErr           error
+}
+
+func (m *mockPlatform) DiscoverEndpoints(_ context.Context) (*platform.DiscoveryResult, error) {
+	m.discoverCalled = true
+	if m.discoverErr != nil {
+		return nil, m.discoverErr
+	}
+	if m.discoverResult != nil {
+		return m.discoverResult, nil
+	}
+	return &platform.DiscoveryResult{
+		RouteServers: []platform.DiscoveredRouteServer{
+			{
+				RouteServerID: "rs-1",
+				RemoteASN:     64512,
+				Endpoints: []platform.DiscoveredEndpoint{
+					{EndpointID: "rse-001", AZ: "us-east-1a", Address: "10.0.1.47"},
+				},
+			},
+		},
+		NeighborsByAZ: map[string][]platform.DiscoveredNeighbor{
+			"us-east-1a": {{Address: "10.0.1.47", ASN: 64512}},
+		},
+		EndpointsByAZ: map[string][]string{
+			"us-east-1a": {"rse-001"},
+		},
+	}, nil
 }
 
 func (m *mockPlatform) ReconcileNodes(_ context.Context, nodes []platform.RouterNode) error {
@@ -209,18 +239,26 @@ func (m *mockPlatform) Cleanup(_ context.Context) error {
 }
 
 func newTestCUDNBgpConfigWithAWS() *networkingv1alpha1.CUDNBgpConfig {
-	config := newTestCUDNBgpConfig()
-	config.Spec.AWS = &networkingv1alpha1.AWSConfig{
-		Region: "us-east-1",
-		CredentialsSecret: networkingv1alpha1.CredentialsSecretRef{
-			Name:      "cudn-bgp-aws-creds",
-			Namespace: "openshift-cudn-bgp-routing",
+	return &networkingv1alpha1.CUDNBgpConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cluster",
 		},
-		RouteServerEndpoints: []networkingv1alpha1.AWSRouteServerEndpoint{
-			{AvailabilityZone: "us-east-1a", EndpointIDs: []string{"rse-001"}},
+		Spec: networkingv1alpha1.CUDNBgpConfigSpec{
+			BGP: networkingv1alpha1.BGPConfig{
+				LocalASN:          65001,
+				LivenessDetection: networkingv1alpha1.LivenessDetectionBGPKeepalive,
+			},
+			RouterNodeSelector: map[string]string{"bgp_router": "true"},
+			AWS: &networkingv1alpha1.AWSConfig{
+				Region: "us-east-1",
+				CredentialsSecret: networkingv1alpha1.CredentialsSecretRef{
+					Name:      "cudn-bgp-aws-creds",
+					Namespace: "openshift-cudn-bgp-routing",
+				},
+				RouteServerIDs: []string{"rs-1"},
+			},
 		},
 	}
-	return config
 }
 
 func newRouterNode(name, ip, az, providerID string) *corev1.Node {
@@ -236,7 +274,7 @@ func newRouterNode(name, ip, az, providerID string) *corev1.Node {
 	}
 }
 
-func TestConfigReconcile_Phase4Success(t *testing.T) {
+func TestConfigReconcile_AWSFullReconcile(t *testing.T) {
 	mock := &mockPlatform{}
 	config := newTestCUDNBgpConfigWithAWS()
 	s := configTestScheme()
@@ -270,13 +308,16 @@ func TestConfigReconcile_Phase4Success(t *testing.T) {
 
 	// First reconcile adds finalizer
 	_, _ = r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
-	// Second reconcile does full 4-phase
+	// Second reconcile does full 5-phase
 	result, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
 	if err != nil {
 		t.Fatalf("reconcile error: %v", err)
 	}
 	if result.RequeueAfter != 5*time.Minute {
 		t.Errorf("expected 5m resync, got %v", result.RequeueAfter)
+	}
+	if !mock.discoverCalled {
+		t.Fatal("expected DiscoverEndpoints to be called")
 	}
 	if !mock.reconcileNodesCalled {
 		t.Fatal("expected ReconcileNodes to be called")
@@ -287,21 +328,38 @@ func TestConfigReconcile_Phase4Success(t *testing.T) {
 	if updated.Status.Phase != networkingv1alpha1.PhaseReady {
 		t.Errorf("expected Ready, got %s", updated.Status.Phase)
 	}
-	if len(updated.Status.Conditions) != 4 {
-		t.Errorf("expected 4 conditions, got %d", len(updated.Status.Conditions))
+	if len(updated.Status.Conditions) != 5 {
+		t.Errorf("expected 5 conditions, got %d", len(updated.Status.Conditions))
 	}
+	if updated.Status.AWS == nil {
+		t.Fatal("expected status.aws to be populated")
+	}
+	if len(updated.Status.AWS.RouteServers) != 1 {
+		t.Errorf("expected 1 route server in status, got %d", len(updated.Status.AWS.RouteServers))
+	}
+
 	for _, cond := range updated.Status.Conditions {
+		if cond.Type == networkingv1alpha1.ConditionAWSEndpointsDiscovered {
+			if cond.Status != metav1.ConditionTrue {
+				t.Errorf("expected AWSEndpointsDiscovered=True, got %s", cond.Status)
+			}
+		}
 		if cond.Type == networkingv1alpha1.ConditionAWSResourcesReconciled {
 			if cond.Status != metav1.ConditionTrue {
 				t.Errorf("expected AWSResourcesReconciled=True, got %s", cond.Status)
 			}
-			return
 		}
 	}
-	t.Error("AWSResourcesReconciled condition not found")
+
+	// Verify FRR was created from discovery
+	frrConfig := &unstructured.Unstructured{}
+	frrConfig.SetGroupVersionKind(FRRConfigurationGVK)
+	if err := c.Get(context.Background(), types.NamespacedName{Name: "cudn-bgp-az-1", Namespace: FRRNamespace}, frrConfig); err != nil {
+		t.Fatalf("FRRConfiguration not created from discovery: %v", err)
+	}
 }
 
-func TestConfigReconcile_Phase4CredentialFailure(t *testing.T) {
+func TestConfigReconcile_AWSCredentialFailure(t *testing.T) {
 	config := newTestCUDNBgpConfigWithAWS()
 	config.Finalizers = []string{ConfigFinalizerName}
 	s := configTestScheme()
@@ -343,17 +401,70 @@ func TestConfigReconcile_Phase4CredentialFailure(t *testing.T) {
 		t.Errorf("expected Degraded, got %s", updated.Status.Phase)
 	}
 	for _, cond := range updated.Status.Conditions {
-		if cond.Type == networkingv1alpha1.ConditionAWSResourcesReconciled {
+		if cond.Type == networkingv1alpha1.ConditionAWSEndpointsDiscovered {
 			if cond.Reason != "AWSCredentialsInvalid" {
 				t.Errorf("expected reason AWSCredentialsInvalid, got %s", cond.Reason)
 			}
 			return
 		}
 	}
-	t.Error("AWSResourcesReconciled condition not found")
+	t.Error("AWSEndpointsDiscovered condition not found")
 }
 
-func TestConfigReconcile_Phase4Failure(t *testing.T) {
+func TestConfigReconcile_AWSDiscoveryFailure(t *testing.T) {
+	mock := &mockPlatform{discoverErr: fmt.Errorf("DescribeRouteServers: InvalidRouteServerID")}
+	config := newTestCUDNBgpConfigWithAWS()
+	config.Finalizers = []string{ConfigFinalizerName}
+	s := configTestScheme()
+
+	network := &unstructured.Unstructured{
+		Object: map[string]interface{}{
+			"apiVersion": "operator.openshift.io/v1",
+			"kind":       "Network",
+			"metadata":   map[string]interface{}{"name": "cluster"},
+			"spec":       map[string]interface{}{},
+		},
+	}
+	frrNS := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: FRRNamespace}}
+	frrPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "frr-k8s-pod", Namespace: FRRNamespace, Labels: map[string]string{"app": "frr-k8s"}},
+		Status:     corev1.PodStatus{Phase: corev1.PodRunning},
+	}
+
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(config, network, frrNS, frrPod).
+		WithStatusSubresource(config).
+		Build()
+
+	r := &CUDNBgpConfigReconciler{
+		Client: c, Scheme: s,
+		PlatformBuilder: func(_ context.Context, _ client.Client, _ *networkingv1alpha1.CUDNBgpConfig) (platform.CloudPlatform, error) {
+			return mock, nil
+		},
+	}
+
+	result, _ := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
+	if result.RequeueAfter != 30*time.Second {
+		t.Errorf("expected 30s degraded requeue, got %v", result.RequeueAfter)
+	}
+
+	updated := &networkingv1alpha1.CUDNBgpConfig{}
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "cluster"}, updated)
+	if updated.Status.Phase != networkingv1alpha1.PhaseDegraded {
+		t.Errorf("expected Degraded, got %s", updated.Status.Phase)
+	}
+	for _, cond := range updated.Status.Conditions {
+		if cond.Type == networkingv1alpha1.ConditionAWSEndpointsDiscovered {
+			if cond.Reason != "AWSDiscoveryFailed" {
+				t.Errorf("expected reason AWSDiscoveryFailed, got %s", cond.Reason)
+			}
+			return
+		}
+	}
+	t.Error("AWSEndpointsDiscovered condition not found")
+}
+
+func TestConfigReconcile_AWSReconcileFailure(t *testing.T) {
 	mock := &mockPlatform{reconcileNodesErr: fmt.Errorf("ec2 API timeout")}
 	config := newTestCUDNBgpConfigWithAWS()
 	config.Finalizers = []string{ConfigFinalizerName}
@@ -407,7 +518,7 @@ func TestConfigReconcile_Phase4Failure(t *testing.T) {
 	t.Error("AWSResourcesReconciled condition not found")
 }
 
-func TestConfigReconcile_Phase4NodeFiltering(t *testing.T) {
+func TestConfigReconcile_AWSNodeFiltering(t *testing.T) {
 	mock := &mockPlatform{}
 	config := newTestCUDNBgpConfigWithAWS()
 	config.Finalizers = []string{ConfigFinalizerName}
@@ -432,7 +543,6 @@ func TestConfigReconcile_Phase4NodeFiltering(t *testing.T) {
 		newRouterNode("node-2", "10.0.2.10", "us-east-1b", "aws:///us-east-1b/i-002"),
 		newRouterNode("node-3", "10.0.3.10", "us-east-1c", "aws:///us-east-1c/i-003"),
 	}
-	// Missing IP
 	missingIP := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   "node-no-ip",
@@ -440,7 +550,6 @@ func TestConfigReconcile_Phase4NodeFiltering(t *testing.T) {
 		},
 		Spec: corev1.NodeSpec{ProviderID: "aws:///us-east-1a/i-004"},
 	}
-	// Missing AZ
 	missingAZ := &corev1.Node{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:   "node-no-az",
@@ -518,6 +627,9 @@ func TestConfigReconcile_DeleteSuccessful(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	if !mock.discoverCalled {
+		t.Error("expected DiscoverEndpoints to be called before cleanup")
+	}
 	if !mock.cleanupCalled {
 		t.Error("expected Cleanup to be called during deletion")
 	}
@@ -536,3 +648,4 @@ func TestConfigReconcile_DeleteSuccessful(t *testing.T) {
 		}
 	}
 }
+
