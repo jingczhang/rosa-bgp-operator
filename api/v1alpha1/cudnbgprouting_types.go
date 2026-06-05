@@ -47,7 +47,8 @@ type CUDNBgpRoutingStatus struct {
 // +kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// CUDNBgpRouting declares a single CUDN network to create and advertise via BGP.
+// CUDNBgpRouting declares a single CUDN network to advertise via BGP.
+// Users must pre-create and label namespaces; the operator manages only the CUDN and RouteAdvertisements.
 type CUDNBgpRouting struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`

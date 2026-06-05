@@ -21,6 +21,7 @@ import (
 	"testing"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -83,10 +84,19 @@ func newReadyCUDNBgpConfig() *networkingv1alpha1.CUDNBgpConfig {
 func TestRoutingReconcile_FullReconcile(t *testing.T) {
 	routing := newTestCUDNBgpRouting()
 	config := newReadyCUDNBgpConfig()
+	ns := &corev1.Namespace{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "cudn1",
+			Labels: map[string]string{
+				LabelPrimaryUDN: "",
+				LabelCUDN:       "prod",
+			},
+		},
+	}
 
 	s := routingTestScheme()
 	c := fake.NewClientBuilder().WithScheme(s).
-		WithObjects(routing, config).
+		WithObjects(routing, config, ns).
 		WithStatusSubresource(routing, config).
 		Build()
 
@@ -117,14 +127,6 @@ func TestRoutingReconcile_FullReconcile(t *testing.T) {
 		t.Errorf("expected 2 conditions, got %d", len(updated.Status.Conditions))
 	}
 
-	// Verify Namespace created
-	ns := &unstructured.Unstructured{}
-	ns.SetAPIVersion("v1")
-	ns.SetKind("Namespace")
-	if err := c.Get(context.Background(), types.NamespacedName{Name: "prod"}, ns); err != nil {
-		t.Fatalf("namespace not created: %v", err)
-	}
-
 	// Verify CUDN created
 	cudn := &unstructured.Unstructured{}
 	cudn.SetGroupVersionKind(CUDNNetworkGVK)
@@ -137,6 +139,32 @@ func TestRoutingReconcile_FullReconcile(t *testing.T) {
 	ra.SetGroupVersionKind(RouteAdvertisementsGVK)
 	if err := c.Get(context.Background(), types.NamespacedName{Name: RouteAdvertisementName}, ra); err != nil {
 		t.Fatalf("RouteAdvertisements not created: %v", err)
+	}
+}
+
+func TestRoutingReconcile_NoNamespace(t *testing.T) {
+	routing := newTestCUDNBgpRouting()
+	routing.Finalizers = []string{RoutingFinalizerName}
+	config := newReadyCUDNBgpConfig()
+
+	s := routingTestScheme()
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(routing, config).
+		WithStatusSubresource(routing, config).
+		Build()
+
+	r := &CUDNBgpRoutingReconciler{Client: c, Scheme: s}
+	_, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "prod"},
+	})
+	if err == nil {
+		t.Fatal("expected error when no labeled namespace exists")
+	}
+
+	updated := &networkingv1alpha1.CUDNBgpRouting{}
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "prod"}, updated)
+	if updated.Status.Phase != networkingv1alpha1.PhaseDegraded {
+		t.Errorf("expected Degraded, got %s", updated.Status.Phase)
 	}
 }
 

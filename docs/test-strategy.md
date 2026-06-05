@@ -24,7 +24,7 @@ Test strategy for the CUDN BGP Routing Operator. The operator has two layers of 
                    │  • Routing controller        │  │                                      │
                    │                              │  │                                      │
   E2E tests        │  test/e2e/ (shared tests)    │  │  test/e2e/<provider>/ tests          │
-                   │  • Operator pod starts       │  │  • Full stack reconcile on cluster   │
+                   │  • (none currently defined)  │  │  • Full stack reconcile on cluster   │
                    │                              │  │  • Node-to-peer consistency          │
                    │                              │  │  • Cloud drift recovery              │
                    │                              │  │  • Deletion cleanup (cloud resources)│
@@ -60,7 +60,7 @@ internal/
 ```
 test/e2e/
   e2e_suite_test.go
-  e2e_test.go                          ← shared (operator starts)
+  e2e_test.go                          ← shared (no tests currently defined)
   aws/
     aws_e2e_suite_test.go
     aws_e2e_test.go                    ← AWS E2E (requires credentials secret)

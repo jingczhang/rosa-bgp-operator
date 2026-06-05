@@ -21,26 +21,9 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/tools/clientcmd"
 )
-
-var clientset *kubernetes.Clientset
-
-const operatorNamespace = "openshift-cudn-bgp-routing"
 
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "E2E Suite")
 }
-
-var _ = BeforeSuite(func() {
-	rules := clientcmd.NewDefaultClientConfigLoadingRules()
-	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-		rules, &clientcmd.ConfigOverrides{},
-	).ClientConfig()
-	Expect(err).NotTo(HaveOccurred(), "failed to load kubeconfig")
-
-	clientset, err = kubernetes.NewForConfig(config)
-	Expect(err).NotTo(HaveOccurred(), "failed to create kubernetes client")
-})

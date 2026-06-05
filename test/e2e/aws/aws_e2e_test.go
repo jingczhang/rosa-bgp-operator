@@ -28,6 +28,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
@@ -118,6 +119,18 @@ var _ = Describe("AWS E2E", Ordered, func() {
 					"SourceDestCheck should be disabled on %s", n.Name)
 			}
 
+			By("creating labeled namespace for CUDN")
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: bgpRouting.Spec.Network.Name,
+					Labels: map[string]string{
+						"k8s.ovn.org/primary-user-defined-network": "",
+						"cluster-udn": bgpRouting.Spec.Network.Name,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, ns)).To(Succeed())
+
 			By("applying CUDNBgpRouting CR")
 			routingCR := bgpRouting.DeepCopy()
 			routingCR.ResourceVersion = ""
@@ -130,9 +143,7 @@ var _ = Describe("AWS E2E", Ordered, func() {
 				g.Expect(rt.Status.Phase).To(Equal(networkingv1alpha1.PhaseReady))
 			}).WithTimeout(reconcileTimeout).WithPolling(pollInterval).Should(Succeed())
 
-			By("verifying routing resources: namespace, CUDN, RouteAdvertisements")
-			ns := &corev1.Namespace{}
-			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: bgpRouting.Spec.Network.Name}, ns)).To(Succeed())
+			By("verifying routing resources: CUDN, RouteAdvertisements")
 
 			cudn := &unstructured.Unstructured{}
 			cudn.SetGroupVersionKind(schema.GroupVersionKind{

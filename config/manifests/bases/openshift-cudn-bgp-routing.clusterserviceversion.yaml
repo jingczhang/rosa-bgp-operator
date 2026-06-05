@@ -28,7 +28,7 @@ metadata:
         {
           "apiVersion": "networking.openshift.io/v1alpha1",
           "kind": "CUDNBgpRouting",
-          "metadata": {"name": "prod"},
+          "metadata": {"name": "cudn1"},
           "spec": {
             "network": {"name": "prod", "subnet": "10.100.0.0/16"}
           }
@@ -74,7 +74,7 @@ spec:
     provided (e.g. AWS), the operator auto-discovers cloud BGP
     infrastructure and manages cloud-side networking resources. It
     replaces manual in-cluster configuration steps by reconciling
-    FRRConfiguration, ClusterUserDefinedNetwork, Namespace, and
+    FRRConfiguration, ClusterUserDefinedNetwork, and
     RouteAdvertisements resources from two simple CRs.
   displayName: CUDN BGP Routing Operator
   icon:

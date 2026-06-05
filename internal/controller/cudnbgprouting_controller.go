@@ -36,7 +36,7 @@ import (
 // +kubebuilder:rbac:groups=networking.openshift.io,resources=cudnbgproutings,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=networking.openshift.io,resources=cudnbgproutings/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=networking.openshift.io,resources=cudnbgproutings/finalizers,verbs=update
-// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=k8s.ovn.org,resources=clusteruserdefinednetworks,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=k8s.ovn.org,resources=routeadvertisements,verbs=get;list;watch;create;update;patch;delete
 
@@ -102,11 +102,11 @@ func (r *CUDNBgpRoutingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
 
-	// Phase 1: Create Namespace + CUDN
-	log.Info("Phase 1: ensuring namespace and CUDN", "network", routing.Spec.Network.Name)
-	if err := EnsureNamespace(ctx, r.Client, routing.Spec.Network.Name); err != nil {
+	// Phase 1: Validate namespace labels + ensure CUDN
+	log.Info("Phase 1: validating namespace and ensuring CUDN", "network", routing.Spec.Network.Name)
+	if err := ValidateNamespaceLabels(ctx, r.Client, routing.Spec.Network.Name); err != nil {
 		return r.setDegraded(ctx, routing, networkingv1alpha1.ConditionCUDNCreated,
-			"NamespaceFailed", fmt.Sprintf("failed to ensure namespace: %v", err))
+			"NamespaceNotReady", fmt.Sprintf("namespace validation failed: %v", err))
 	}
 	if err := EnsureCUDN(ctx, r.Client, routing); err != nil {
 		return r.setDegraded(ctx, routing, networkingv1alpha1.ConditionCUDNCreated,
@@ -116,7 +116,7 @@ func (r *CUDNBgpRoutingReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		Type:               networkingv1alpha1.ConditionCUDNCreated,
 		Status:             metav1.ConditionTrue,
 		Reason:             "Created",
-		Message:            fmt.Sprintf("Namespace %q and CUDN %q%s ensured", routing.Spec.Network.Name, CUDNNamePrefix+routing.Spec.Network.Name, ""),
+		Message:            fmt.Sprintf("CUDN %q ensured", CUDNNamePrefix+routing.Spec.Network.Name),
 		ObservedGeneration: routing.Generation,
 	})
 

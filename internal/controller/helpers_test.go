@@ -38,35 +38,29 @@ func testScheme() *runtime.Scheme {
 	return s
 }
 
-func TestEnsureNamespace_AdoptsExisting(t *testing.T) {
+func TestValidateNamespaceLabels_Found(t *testing.T) {
 	existing := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   "prod",
-			Labels: map[string]string{"existing": "label"},
+			Name: "cudn1",
+			Labels: map[string]string{
+				LabelPrimaryUDN: "",
+				LabelCUDN:       "prod",
+			},
 		},
 	}
 	c := fake.NewClientBuilder().WithScheme(testScheme()).WithObjects(existing).Build()
-	ctx := context.Background()
 
-	if err := EnsureNamespace(ctx, c, "prod"); err != nil {
+	if err := ValidateNamespaceLabels(context.Background(), c, "prod"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
 
-	ns := &corev1.Namespace{}
-	if err := c.Get(ctx, types.NamespacedName{Name: "prod"}, ns); err != nil {
-		t.Fatalf("namespace not found: %v", err)
-	}
-	if ns.Labels["existing"] != "label" {
-		t.Error("existing label was removed")
-	}
-	if ns.Labels[LabelCUDN] != "prod" {
-		t.Error("CUDN label not added during adoption")
-	}
-	if ns.Labels[LabelPrimaryUDN] != "" {
-		t.Errorf("expected empty primary UDN label, got %q", ns.Labels[LabelPrimaryUDN])
-	}
-	if ns.Labels[LabelManagedBy] != LabelManagedByVal {
-		t.Errorf("expected managed-by label, got %q", ns.Labels[LabelManagedBy])
+func TestValidateNamespaceLabels_NotFound(t *testing.T) {
+	c := fake.NewClientBuilder().WithScheme(testScheme()).Build()
+
+	err := ValidateNamespaceLabels(context.Background(), c, "prod")
+	if err == nil {
+		t.Fatal("expected error when no namespace has required labels")
 	}
 }
 

@@ -77,7 +77,8 @@ Tests for `CUDNBgpRoutingReconciler` covering pre-checks, Phases 1-2, and deleti
 
 | ID | Test Case | Setup | Expected Result |
 |:---|:---|:---|:---|
-| UT-10 | Full reconcile | Config Ready | Namespace + CUDN + RouteAdvertisements created, phase=Ready with 2 conditions |
+| UT-10 | Full reconcile | Config Ready, labeled namespace pre-created | CUDN + RouteAdvertisements created, phase=Ready with 2 conditions |
+| UT-10b | No labeled namespace | Config Ready, no namespace with required labels | phase=Degraded, reason=NamespaceNotReady |
 
 #### Deletion
 
@@ -94,7 +95,8 @@ Non-trivial helper logic tested in isolation. Simple CRUD helpers (create, delet
 
 | ID | Test Case | Verifies |
 |:---|:---|:---|
-| UT-13 | EnsureNamespace adopts existing | Adds required labels without removing existing ones |
+| UT-13 | ValidateNamespaceLabels found | Returns nil when namespace with required labels exists |
+| UT-13b | ValidateNamespaceLabels not found | Returns error when no namespace has required labels |
 | UT-14 | EnsureFRRConfigurations BFD | BFD profile added when livenessDetection=bfd |
 | UT-15 | EnsureFRRConfigurations prunes stale | Stale managed configs deleted when AZ count reduced |
 | UT-16 | EnsureFRRConfigurations keeps unmanaged | User-owned FRRConfigurations not pruned |
@@ -105,9 +107,7 @@ Non-trivial helper logic tested in isolation. Simple CRUD helpers (create, delet
 
 Shared E2E tests that validate the operator runs correctly on any OCP 4.18+ cluster. No cloud credentials or CRs required.
 
-| ID | Test Case | Action | Verification |
-|:---|:---|:---|:---|
-| E2E-01 | Operator pod starts | Deploy operator via `make deploy` | Pod Running in `openshift-cudn-bgp-routing` namespace |
+No provider-independent E2E tests are currently defined. The suite infrastructure exists at `test/e2e/` for future use.
 
 ---
 

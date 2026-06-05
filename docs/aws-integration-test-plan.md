@@ -93,7 +93,7 @@ Full end-to-end tests running the operator on a ROSA HCP cluster with VPC Route 
 
 | ID | Test Case | Action | Verification |
 |:---|:---|:---|:---|
-| E2E-AWS-01 | Full stack reconcile | Deploy operator, apply CUDNBgpConfig and CUDNBgpRouting CRs | Operator Running; config phase=Ready; `status.aws.routeServers` populated with discovered endpoints, IPs, AZs, and remote ASN; FRRConfigurations created per discovered AZ with discovered neighbor addresses; Route Server peers exist per AZ; SourceDestCheck=false on router nodes; routing phase=Ready with namespace + CUDN + RouteAdvertisements; FRR pods show established BGP sessions |
+| E2E-AWS-01 | Full stack reconcile | Deploy operator, create labeled namespace, apply CUDNBgpConfig and CUDNBgpRouting CRs | Operator Running; config phase=Ready; `status.aws.routeServers` populated with discovered endpoints, IPs, AZs, and remote ASN; FRRConfigurations created per discovered AZ with discovered neighbor addresses; Route Server peers exist per AZ; SourceDestCheck=false on router nodes; routing phase=Ready with CUDN + RouteAdvertisements; FRR pods show established BGP sessions |
 
 ### Node Lifecycle
 

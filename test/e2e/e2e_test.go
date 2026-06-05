@@ -15,36 +15,3 @@ limitations under the License.
 */
 
 package e2e
-
-import (
-	"context"
-	"time"
-
-	. "github.com/onsi/ginkgo/v2"
-	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
-
-var _ = Describe("CUDN BGP Routing Operator", func() {
-	Context("E2E-01: Operator pod starts", func() {
-		It("should have a Running controller-manager pod", func(ctx context.Context) {
-			Eventually(func(g Gomega) {
-				pods, err := clientset.CoreV1().Pods(operatorNamespace).List(ctx, metav1.ListOptions{
-					LabelSelector: "control-plane=controller-manager",
-				})
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(pods.Items).NotTo(BeEmpty(), "no controller-manager pods found")
-
-				var running bool
-				for _, pod := range pods.Items {
-					if pod.Status.Phase == corev1.PodRunning {
-						running = true
-						break
-					}
-				}
-				g.Expect(running).To(BeTrue(), "no controller-manager pod in Running phase")
-			}).WithTimeout(30 * time.Second).WithPolling(3 * time.Second).Should(Succeed())
-		})
-	})
-})

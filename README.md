@@ -43,7 +43,7 @@ The overall solution (e.g. AWS) has two layers. The operator manages the in-clus
 │       node changes (Route Server peers, SourceDestCheck, etc.)       │
 │                                                                      │
 │  CUDNBgpRouting CR (one per application project)                     │
-│  ├── ClusterUserDefinedNetwork + Namespace                           │
+│  ├── ClusterUserDefinedNetwork (targets user-labeled namespaces)     │
 │  └── Shared RouteAdvertisements (all CUDNs with advertise=true)      │
 └──────────────────────────────────────────────────────────────────────┘
 ```
@@ -99,7 +99,7 @@ Currently only AWS platform integration is implemented but the design allows for
 | Enable FRR + routeAdvertisements | `oc patch` in shell script (step 6) | Controller patches Network CR on reconcile |
 | Wait for FRR readiness | `sleep 60`, retry on error (step 6) | Controller polls FRR namespace and pods, requeues every 10s until ready |
 | FRR BGP configuration | Single `FRRConfiguration` inline in script with all 6 neighbors hard-coded from `terraform output` — cross-AZ sessions fail (step 6) | One `FRRConfiguration` per AZ, neighbors and ASN auto-discovered from Route Server APIs |
-| Namespace + CUDN | `oc apply -f yamls/` (step 7) | Controller creates Namespace + ClusterUserDefinedNetwork per CUDNBgpRouting CR |
+| Namespace + CUDN | `oc apply -f yamls/` (step 7) | User creates labeled namespaces; controller creates ClusterUserDefinedNetwork per CUDNBgpRouting CR |
 | RouteAdvertisements | `oc apply -f yamls/` (step 7) | Controller ensures a single shared RouteAdvertisements |
 | Route Server peers | Terraform creates all peers statically (step 4) | Controller creates per-AZ peers dynamically, adopts/removes on node changes |
 | Source/dest check | Terraform disables via shell script (step 4) | Controller disables on each BGP-enabled worker node's primary ENI |
@@ -203,10 +203,10 @@ spec:
 apiVersion: networking.openshift.io/v1alpha1
 kind: CUDNBgpRouting
 metadata:
-  name: prod
+  name: cudn1
 spec:
   network:
-    name: prod                       # matches PoC ClusterUserDefinedNetwork "cluster-udn-prod"
+    name: prod                       # CUDN selects namespaces with label cluster-udn=prod
     subnet: 10.100.0.0/16
 ```
 
@@ -297,7 +297,7 @@ oc create secret generic cudn-bgp-aws-creds \
 
 | Field | Required | Description |
 |:---|:---|:---|
-| `spec.network.name` | Yes | Name for the CUDN and its namespace. |
+| `spec.network.name` | Yes | Identifies the CUDN network. The operator creates a ClusterUserDefinedNetwork named `cluster-udn-<name>` that selects namespaces with label `cluster-udn: <name>`. Users must pre-create and label namespaces. |
 | `spec.network.subnet` | Yes | CIDR for the CUDN pod network. The operator hardcodes `topology: Layer2`, `role: Primary`, and `ipam.lifecycle: Persistent` on the generated CUDN. |
 
 ### Operator-generated resources
@@ -413,20 +413,19 @@ spec:
                 mode: all
 ```
 
-The following resources are generated from CUDNBgpRouting and are identical regardless of platform configuration.
-
-#### Namespace (from CUDNBgpRouting)
+Users must pre-create namespaces with the required labels before applying a CUDNBgpRouting CR. The `k8s.ovn.org/primary-user-defined-network` label must be set at creation time — OCP admission policy prevents adding it after the namespace exists.
 
 ```yaml
 apiVersion: v1
 kind: Namespace
 metadata:
-  name: prod
+  name: app1                     # any name — does not need to match spec.network.name
   labels:
     k8s.ovn.org/primary-user-defined-network: ""
-    cluster-udn: prod
-    app.kubernetes.io/managed-by: cudn-bgp-routing-operator
+    cluster-udn: prod            # must match spec.network.name
 ```
+
+The following resources are generated from CUDNBgpRouting and are identical regardless of platform configuration:
 
 #### ClusterUserDefinedNetwork (from CUDNBgpRouting)
 
@@ -547,11 +546,11 @@ Reconciles individual CUDN networks. Before executing phases, the controller run
 2. **Config readiness** — `CUDNBgpConfig` named `cluster` must exist and be in phase `Ready`. If missing or not yet `Ready`, the routing CR remains in `Pending` phase (conditions are cleared) and requeues every 10 seconds.
 
 ```
-Phase 1: Create CUDN Resources
-  ├── If Namespace exists: adopt it (ensure required labels present)
-  │   If not: create Namespace with labels:
+Phase 1: Validate Namespace + Create CUDN
+  ├── Validate at least one namespace exists with labels:
   │   k8s.ovn.org/primary-user-defined-network: ""
   │   cluster-udn: <spec.network.name>
+  │   (if no matching namespace found → Degraded with reason NamespaceNotReady)
   ├── Create ClusterUserDefinedNetwork with:
   │   namespaceSelector matching cluster-udn: <spec.network.name>
   │   subnet from spec.network
@@ -571,7 +570,7 @@ Phase 2: Ensure Route Advertisements
      phase: Ready
 ```
 
-**On deletion:** delete the owned ClusterUserDefinedNetwork. The shared RouteAdvertisements is deleted only when the last CUDNBgpRouting CR is removed. Namespace is left intact.
+**On deletion:** delete the owned ClusterUserDefinedNetwork. The shared RouteAdvertisements is deleted only when the last CUDNBgpRouting CR is removed.
 
 ### Status phases and error handling
 
@@ -602,7 +601,7 @@ Both CRs use the same phase enum. `CUDNBgpRouting` follows `Pending` → `Config
 | Condition | Degraded Reason | Cause |
 |:---|:---|:---|
 | `CUDNCreated` | `DuplicateNetwork` | `spec.network.name` already claimed by another CUDNBgpRouting CR |
-| `CUDNCreated` | `NamespaceFailed` | Failed to create or adopt the namespace |
+| `CUDNCreated` | `NamespaceNotReady` | No namespace found with required labels (`k8s.ovn.org/primary-user-defined-network: ""` and `cluster-udn: <name>`) |
 | `CUDNCreated` | `CUDNFailed` | Failed to create/update the ClusterUserDefinedNetwork |
 | `RouteAdvertisementsCreated` | `RAFailed` | Failed to ensure the shared RouteAdvertisements |
 
@@ -612,7 +611,7 @@ Inspect the failing condition for the root cause:
 
 ```bash
 oc get cudnbgpconfig cluster -o jsonpath='{.status.conditions}' | jq .
-oc get cudnbgprouting prod -o jsonpath='{.status.conditions}' | jq .
+oc get cudnbgprouting cudn1 -o jsonpath='{.status.conditions}' | jq .
 ```
 
 ---
@@ -653,41 +652,87 @@ cd rosa-bgp-operator
 
 The operator can be tested on any OCP 4.18+ cluster with an external BGP router — with or without cloud integration.
 
-1. `oc login` to the cluster and deploy:
+1. `oc login` to the cluster and ensure the internal image registry is enabled and exposed (already done on most clusters; required on compact/SNO deployments where it defaults to `Removed`):
 
 ```bash
-IMG=$(oc registry info)/openshift-cudn-bgp-routing/operator:dev
-make docker-build docker-push CONTAINER_TOOL=podman IMG=$IMG
-make deploy IMG=$IMG
+oc login -u kubeadmin -p <password> https://api.<cluster>:6443
+oc patch configs.imageregistry.operator.openshift.io cluster --type merge -p '{"spec":{"managementState":"Managed","storage":{"emptyDir":{}}}}'
+oc patch configs.imageregistry.operator.openshift.io cluster --type merge -p '{"spec":{"defaultRoute":true}}'
+oc wait --for=condition=Available configs.imageregistry.operator.openshift.io cluster --timeout=120s
 ```
 
-2. Create the CRs for your environment:
+2. Build the image:
+
+```bash
+REGISTRY=$(oc get route default-route -n openshift-image-registry -o jsonpath='{.spec.host}')
+IMG=$REGISTRY/openshift-cudn-bgp-routing/operator:dev
+make docker-build CONTAINER_TOOL=podman IMG=$IMG
+```
+
+3. Push the image and deploy:
+
+```bash
+oc create namespace openshift-cudn-bgp-routing --dry-run=client -o yaml | oc apply -f -
+oc create sa registry-push -n openshift-cudn-bgp-routing 2>/dev/null
+oc adm policy add-role-to-user registry-editor -z registry-push -n openshift-cudn-bgp-routing
+podman login $REGISTRY --tls-verify=false -u unused -p $(oc create token registry-push -n openshift-cudn-bgp-routing)
+make docker-push CONTAINER_TOOL=podman IMG=$IMG
+make deploy IMG=image-registry.openshift-image-registry.svc:5000/openshift-cudn-bgp-routing/operator:dev
+```
+
+4. Re-deploy after code changes (rebuild, push, and restart):
+
+```bash
+make docker-build CONTAINER_TOOL=podman IMG=$IMG
+make docker-push CONTAINER_TOOL=podman IMG=$IMG
+oc patch deployment openshift-cudn-bgp-routing-controller-manager -n openshift-cudn-bgp-routing \
+  -p '{"spec":{"template":{"spec":{"containers":[{"name":"manager","imagePullPolicy":"Always"}]}}}}'
+oc rollout restart deployment/openshift-cudn-bgp-routing-controller-manager -n openshift-cudn-bgp-routing
+```
+
+5. Create the CRs for your environment:
 
    **For ROSA HCP with AWS VPC Route Server:** provision AWS infrastructure first with [rosa-bgp Terraform](https://github.com/msemanrh/rosa-bgp), then create the CR with Route Server IDs and BGP ASN from `terraform output`. The operator auto-discovers all Route Server endpoints, neighbor IPs, and remote ASN:
 
    ```bash
    oc apply -f config/samples/networking_v1alpha1_cudnbgpconfig.yaml
-   oc apply -f config/samples/networking_v1alpha1_cudnbgprouting.yaml
    ```
 
    **Without cloud integration:** create the CRs with your BGP router's ASN, neighbor addresses, and node selectors. Omit the `spec.aws` section and provide explicit `spec.bgp.availabilityZones`. See the commented-out section in `config/samples/networking_v1alpha1_cudnbgpconfig.yaml` for an example:
 
    ```bash
    oc apply -f your-cudnbgpconfig.yaml    # no spec.aws, explicit availabilityZones
-   oc apply -f your-cudnbgprouting.yaml
    ```
 
-3. Verify:
+   Then create a labeled namespace and apply the routing CR:
+
+```bash
+cat <<EOF | oc apply -f -
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: app1
+  labels:
+    k8s.ovn.org/primary-user-defined-network: ""
+    cluster-udn: prod
+EOF
+```
+
+```bash
+oc apply -f config/samples/networking_v1alpha1_cudnbgprouting.yaml
+```
+
+6. Verify:
 
 ```bash
 oc get cudnbgpconfig cluster -o yaml   # phase: Ready
-oc get cudnbgprouting prod -o yaml     # phase: Ready
+oc get cudnbgprouting cudn1 -o yaml    # phase: Ready
 oc get frrconfiguration -n openshift-frr-k8s
 oc get clusteruserdefinednetwork
 oc get routeadvertisements
 ```
 
-4. Clean up (delete CRs first so finalizers can clean up AWS resources and FRRConfigurations):
+7. Clean up (delete CRs first so finalizers can clean up AWS resources and FRRConfigurations):
 
 ```bash
 oc delete cudnbgprouting --all
@@ -703,7 +748,6 @@ make undeploy
 |:---|:---|:---|
 | `make test` | Platform-independent unit tests (controllers + helpers) | None |
 | `make test-aws` | AWS platform unit tests (mocked EC2/STS) | None |
-| `make test-e2e` | Shared E2E (operator deploys and starts) | Cluster |
 | `make test-e2e-aws <profile>` | AWS E2E (full reconciliation lifecycle), profile required | Cluster + AWS credentials |
 
 Provider-specific E2E tests read CR manifests from `test/e2e/manifests/<profile>/` and require a profile name (e.g., `make test-e2e-aws poc`). To test your own ROSA cluster, add a profile directory with your CRs.
