@@ -29,7 +29,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	corev1 "k8s.io/api/core/v1"
@@ -90,22 +89,9 @@ var _ = BeforeSuite(func() {
 	k8sClient, err = client.New(restCfg, client.Options{Scheme: scheme})
 	Expect(err).NotTo(HaveOccurred())
 
-	By("reading AWS credentials from cluster secret")
-	secret := &corev1.Secret{}
-	Expect(k8sClient.Get(context.Background(), types.NamespacedName{
-		Name:      bgpConfig.Spec.AWS.CredentialsSecret.Name,
-		Namespace: bgpConfig.Spec.AWS.CredentialsSecret.Namespace,
-	}, secret)).To(Succeed())
-
+	By("building AWS client using default credential chain")
 	awsCfg, err := awsconfig.LoadDefaultConfig(context.Background(),
 		awsconfig.WithRegion(bgpConfig.Spec.AWS.Region),
-		awsconfig.WithCredentialsProvider(
-			credentials.NewStaticCredentialsProvider(
-				string(secret.Data["AWS_ACCESS_KEY_ID"]),
-				string(secret.Data["AWS_SECRET_ACCESS_KEY"]),
-				"",
-			),
-		),
 	)
 	Expect(err).NotTo(HaveOccurred())
 	ec2Client = ec2.NewFromConfig(awsCfg)
@@ -125,15 +111,14 @@ var _ = BeforeSuite(func() {
 	By("discovering route server endpoints from AWS")
 	endpointsByAZ = make(map[string][]string)
 	for _, rsID := range bgpConfig.Spec.AWS.RouteServerIDs {
-		rseOut, rseErr := ec2Client.DescribeRouteServerEndpoints(context.Background(), &ec2.DescribeRouteServerEndpointsInput{
-			Filters: []ec2types.Filter{
-				{Name: aws.String("route-server-id"), Values: []string{rsID}},
-			},
-		})
+		rseOut, rseErr := ec2Client.DescribeRouteServerEndpoints(context.Background(), &ec2.DescribeRouteServerEndpointsInput{})
 		Expect(rseErr).NotTo(HaveOccurred())
 		subnetIDs := make([]string, 0)
 		epBySubnet := make(map[string][]string)
 		for _, ep := range rseOut.RouteServerEndpoints {
+			if aws.ToString(ep.RouteServerId) != rsID {
+				continue
+			}
 			sid := aws.ToString(ep.SubnetId)
 			epBySubnet[sid] = append(epBySubnet[sid], aws.ToString(ep.RouteServerEndpointId))
 			subnetIDs = append(subnetIDs, sid)
@@ -168,16 +153,23 @@ func addUnstructuredTypes(s *runtime.Scheme) {
 }
 
 func listManagedPeers(ctx context.Context, endpointID string) ([]ec2types.RouteServerPeer, error) {
-	out, err := ec2Client.DescribeRouteServerPeers(ctx, &ec2.DescribeRouteServerPeersInput{
-		Filters: []ec2types.Filter{
-			{Name: aws.String("route-server-endpoint-id"), Values: []string{endpointID}},
-			{Name: aws.String("tag:managed-by"), Values: []string{managedByTag}},
-		},
-	})
+	out, err := ec2Client.DescribeRouteServerPeers(ctx, &ec2.DescribeRouteServerPeersInput{})
 	if err != nil {
 		return nil, err
 	}
-	return out.RouteServerPeers, nil
+	var filtered []ec2types.RouteServerPeer
+	for _, peer := range out.RouteServerPeers {
+		if aws.ToString(peer.RouteServerEndpointId) != endpointID {
+			continue
+		}
+		for _, t := range peer.Tags {
+			if aws.ToString(t.Key) == "managed-by" && aws.ToString(t.Value) == managedByTag {
+				filtered = append(filtered, peer)
+				break
+			}
+		}
+	}
+	return filtered, nil
 }
 
 func allManagedPeers(ctx context.Context) ([]ec2types.RouteServerPeer, error) {

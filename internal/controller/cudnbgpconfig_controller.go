@@ -56,7 +56,6 @@ import (
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=nodes,verbs=get;list;watch
-// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=config.openshift.io,resources=infrastructures,verbs=get
 
 type PlatformBuilderFunc func(ctx context.Context, c client.Client, config *networkingv1alpha1.CUDNBgpConfig) (platform.CloudPlatform, error)
@@ -259,17 +258,6 @@ func defaultPlatformBuilder(ctx context.Context, c client.Client, config *networ
 		LivenessDetection: string(config.Spec.BGP.LivenessDetection),
 		ClusterID:         clusterID,
 	}
-
-	secret := &corev1.Secret{}
-	key := types.NamespacedName{
-		Name:      awsSpec.CredentialsSecret.Name,
-		Namespace: awsSpec.CredentialsSecret.Namespace,
-	}
-	if err := c.Get(ctx, key, secret); err != nil {
-		return nil, fmt.Errorf("reading credentials secret %s/%s: %w", key.Namespace, key.Name, err)
-	}
-	cfg.AccessKeyID = string(secret.Data["AWS_ACCESS_KEY_ID"])
-	cfg.SecretAccessKey = string(secret.Data["AWS_SECRET_ACCESS_KEY"])
 
 	return awsplatform.New(ctx, cfg)
 }

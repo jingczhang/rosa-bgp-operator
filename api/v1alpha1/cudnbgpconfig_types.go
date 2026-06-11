@@ -59,14 +59,8 @@ type AvailabilityZone struct {
 	Neighbors []BGPNeighbor `json:"neighbors"`
 }
 
-type CredentialsSecretRef struct {
-	Name      string `json:"name"`
-	Namespace string `json:"namespace"`
-}
-
 type AWSConfig struct {
-	Region            string               `json:"region"`
-	CredentialsSecret CredentialsSecretRef `json:"credentialsSecret"`
+	Region string `json:"region"`
 	// +kubebuilder:validation:MinItems=1
 	RouteServerIDs []string `json:"routeServerIDs"`
 }

@@ -85,39 +85,42 @@ func (p *Platform) reconcileRouteServerPeers(ctx context.Context, nodes []platfo
 }
 
 func (p *Platform) listManagedPeers(ctx context.Context, endpointID string) ([]ec2types.RouteServerPeer, error) {
-	input := &ec2.DescribeRouteServerPeersInput{
-		Filters: []ec2types.Filter{
-			{
-				Name:   aws.String("route-server-endpoint-id"),
-				Values: []string{endpointID},
-			},
-			{
-				Name:   aws.String("tag:" + managedByTagKey()),
-				Values: []string{p.peerTagValue()},
-			},
-		},
-	}
-	output, err := p.ec2Client.DescribeRouteServerPeers(ctx, input)
+	all, err := p.listAllPeers(ctx, endpointID)
 	if err != nil {
 		return nil, err
 	}
-	return output.RouteServerPeers, nil
+	tagKey := managedByTagKey()
+	tagVal := p.peerTagValue()
+	var filtered []ec2types.RouteServerPeer
+	for _, peer := range all {
+		if hasTag(peer.Tags, tagKey, tagVal) {
+			filtered = append(filtered, peer)
+		}
+	}
+	return filtered, nil
 }
 
 func (p *Platform) listAllPeers(ctx context.Context, endpointID string) ([]ec2types.RouteServerPeer, error) {
-	input := &ec2.DescribeRouteServerPeersInput{
-		Filters: []ec2types.Filter{
-			{
-				Name:   aws.String("route-server-endpoint-id"),
-				Values: []string{endpointID},
-			},
-		},
-	}
-	output, err := p.ec2Client.DescribeRouteServerPeers(ctx, input)
+	output, err := p.ec2Client.DescribeRouteServerPeers(ctx, &ec2.DescribeRouteServerPeersInput{})
 	if err != nil {
 		return nil, err
 	}
-	return output.RouteServerPeers, nil
+	var filtered []ec2types.RouteServerPeer
+	for _, peer := range output.RouteServerPeers {
+		if aws.ToString(peer.RouteServerEndpointId) == endpointID {
+			filtered = append(filtered, peer)
+		}
+	}
+	return filtered, nil
+}
+
+func hasTag(tags []ec2types.Tag, key, value string) bool {
+	for _, t := range tags {
+		if aws.ToString(t.Key) == key && aws.ToString(t.Value) == value {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Platform) tagPeer(ctx context.Context, peerID string) error {

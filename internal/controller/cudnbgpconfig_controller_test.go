@@ -248,11 +248,7 @@ func newTestCUDNBgpConfigWithAWS() *networkingv1alpha1.CUDNBgpConfig {
 			},
 			RouterNodeSelector: map[string]string{"bgp_router": "true"},
 			AWS: &networkingv1alpha1.AWSConfig{
-				Region: "us-east-1",
-				CredentialsSecret: networkingv1alpha1.CredentialsSecretRef{
-					Name:      "cudn-bgp-aws-creds",
-					Namespace: "openshift-cudn-bgp-routing",
-				},
+				Region:         "us-east-1",
 				RouteServerIDs: []string{"rs-1"},
 			},
 		},

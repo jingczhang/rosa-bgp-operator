@@ -22,7 +22,7 @@ Based on the rosa-bgp PoC configuration:
 | BGP router nodes | 1 per AZ (3 total), labeled `bgp_router: "true"` |
 | CUDN network | name=`prod`, CIDR from Terraform outputs |
 
-Unit tests hardcode these values with mocked EC2/STS clients — no credentials or cluster required. Discovery API calls (`DescribeRouteServers`, `DescribeRouteServerEndpoints`, `DescribeSubnets`) are mocked alongside the existing peer and instance mocks.
+Unit tests hardcode these values with mocked EC2/STS clients — no AWS credentials or cluster required. The default credential chain (IRSA) is bypassed in unit tests via mock injection. Discovery API calls (`DescribeRouteServers`, `DescribeRouteServerEndpoints`, `DescribeSubnets`) are mocked alongside the existing peer and instance mocks.
 
 E2E tests read CR manifests from a profile directory (`test/e2e/manifests/<profile>/`). AWS E2E tests require `spec.aws` to be set. The `poc` profile is provided as an example; a custom profile matching the actual ROSA deployment is needed for real testing. The test framework derives expected state from the operator's discovered `status.aws.routeServers` and cluster nodes — no topology is hardcoded in the test code.
 
@@ -31,7 +31,7 @@ E2E tests read CR manifests from a profile directory (`test/e2e/manifests/<profi
 | Region, Route Server IDs | From `CUDNBgpConfig` CR in the profile |
 | Endpoints, neighbor IPs, remote ASN, AZs | Auto-discovered by the operator from Route Server IDs |
 | Router nodes + AZs | Listed from cluster using CR's routerNodeSelector + `topology.kubernetes.io/zone` |
-| AWS credentials | From the Secret referenced by the CR |
+| AWS credentials | Via IRSA (operator's ServiceAccount assumes IAM role) |
 | Infrastructure | Provisioned externally (e.g., [rosa-bgp Terraform](https://github.com/msemanrh/rosa-bgp)) |
 
 ---
@@ -40,12 +40,12 @@ E2E tests read CR manifests from a profile directory (`test/e2e/manifests/<profi
 
 Test the AWS platform package in isolation using a mocked EC2 client interface. No AWS credentials or cluster required.
 
-### Credential Validation
+### Credential Verification
 
 | ID | Test Case | Setup | Expected Result |
 |:---|:---|:---|:---|
-| UT-AWS-01 | Valid credentials | Mock STS returns success | Platform created successfully |
-| UT-AWS-02 | Invalid credentials | Empty key, empty secret, or STS auth error | CredentialError returned |
+| UT-AWS-01 | Valid credentials (IRSA) | Mock STS returns success | Platform created successfully |
+| UT-AWS-02 | STS verification failure | Mock STS returns auth error | CredentialError returned |
 
 ### Provider ID → Instance ID + AZ
 
@@ -87,7 +87,7 @@ Test the AWS platform package in isolation using a mocked EC2 client interface. 
 
 Full end-to-end tests running the operator on a ROSA HCP cluster with VPC Route Server infrastructure. Validates the complete reconciliation loop from CR creation through AWS resource state.
 
-**Prerequisites:** ROSA HCP cluster provisioned by rosa-bgp Terraform, AWS credentials secret created.
+**Prerequisites:** ROSA HCP cluster provisioned by rosa-bgp Terraform, IRSA IAM role configured for the operator's ServiceAccount.
 
 ### Initial Deployment
 
@@ -137,7 +137,7 @@ Full operator lifecycle on a ROSA HCP cluster with VPC Route Server infrastructu
 ```bash
 # Prerequisites:
 # - oc login to ROSA HCP cluster
-# - AWS credentials secret created in openshift-cudn-bgp-routing namespace
+# - IRSA IAM role configured for operator ServiceAccount
 # - Infrastructure provisioned (Terraform or equivalent)
 
 # Profile is mandatory — specifies which CRs to apply (must have spec.aws)
@@ -145,4 +145,4 @@ make test-e2e-aws poc
 make test-e2e-aws my-cluster
 ```
 
-Profiles are directories under `test/e2e/manifests/` containing `cudnbgpconfig.yaml` and `cudnbgprouting.yaml`. To test your own ROSA cluster, create a profile directory with your CRs and run `make test-e2e-aws <profile-name>`.
+Profiles are directories under `test/e2e/manifests/` containing `cudnbgpconfig.yaml` and `cudnbgprouting.yaml`. To test your own ROSA cluster, create a profile directory with your CRs, configure IRSA for the operator's ServiceAccount, and run `make test-e2e-aws <profile-name>`.

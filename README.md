@@ -10,7 +10,6 @@ The operator is **cloud platform aware**. When platform configuration is provide
 - [Cloud Platform Integration](#cloud-platform-integration)
 - [Custom Resource Definitions](#custom-resource-definitions)
 - [Controller Reconciliation](#controller-reconciliation)
-- [Future Enhancements](#future-enhancements)
 - [Development](#development)
 - [Automated Testing](#automated-testing)
 
@@ -64,7 +63,7 @@ When a BGP-enabled worker node is replaced (upgrade, spot termination, scaling),
 
 Without platform integration, these require manual intervention (e.g. re-running `terraform apply`). With platform integration, the operator creates and reconciles the cloud-side BGP peering and traffic forwarding for node changes.
 
-Kubernetes has out-of-tree cloud controller managers (e.g. [cloud-provider-aws](https://github.com/kubernetes/cloud-provider-aws)) that implement a broad `cloudprovider.Interface`. This operator uses platform API (e.g. `aws-sdk-go-v2`) directly instead because it only needs a narrow slice of platform functionality (Route Server peers + SourceDestCheck). Importing a full cloud controller manager would bring a large dependency graph for minimal benefit. The architectural pattern (interface-based, per-provider package) is the same.
+Kubernetes has out-of-tree cloud controller managers (e.g. [cloud-provider-aws](https://github.com/kubernetes/cloud-provider-aws)) that implement a broad `cloudprovider.Interface`. This operator uses platform API (e.g. `aws-sdk-go-v2`) directly instead because it only needs a narrow slice of platform functionality (Route Server peers + SourceDestCheck). Importing a full cloud controller manager would bring a large dependency graph for minimal benefit. The architectural pattern (interface-based, per-provider package) is the same. The operator authenticates to AWS via IRSA — the ROSA HCP cluster's pre-configured OIDC provider allows the operator's ServiceAccount to assume an IAM role with short-lived, automatically rotated credentials.
 
 ### AWS Platform
 
@@ -72,7 +71,7 @@ When AWS platform integration is configured, the operator performs additional ac
 
 | Action | AWS API calls | Trigger |
 |:---|:---|:---|
-| Verify credentials | `sts:GetCallerIdentity` | Every reconcile (before any EC2 calls) |
+| Verify credentials | `sts:GetCallerIdentity` | Every reconcile (before any EC2 calls); credentials obtained via IRSA |
 | Discover Route Server infrastructure | `DescribeRouteServers`, `DescribeRouteServerEndpoints`, `DescribeSubnets` | Every reconcile (before FRR configuration) |
 | Reconcile Route Server peers | `DescribeRouteServerPeers`, `CreateRouteServerPeer`, `DeleteRouteServerPeer`, `CreateTags` | BGP-enabled worker node added, removed, or IP changed |
 | Disable SourceDestCheck | `DescribeInstances`, `ModifyNetworkInterfaceAttribute` | New BGP-enabled worker node detected |
@@ -80,6 +79,73 @@ When AWS platform integration is configured, the operator performs additional ac
 **Auto-discovery:** The operator discovers Route Server endpoints, their ENI addresses (BGP neighbor IPs), availability zones, and the Route Server's remote ASN automatically from the provided Route Server IDs. The user does not need to specify per-AZ endpoint IDs or neighbor addresses — the operator derives them via `DescribeRouteServerEndpoints` (endpoint ID + ENI address + subnet), `DescribeSubnets` (subnet → AZ mapping), and `DescribeRouteServers` (remote ASN). Discovered data is written to `status.aws` for observability. This also drives FRR configuration generation — the operator creates one FRRConfiguration per discovered AZ with the discovered neighbor addresses.
 
 Route Server peers are created **per-AZ** — each BGP-enabled worker node is peered with its local AZ's Route Server endpoints. Peers are tagged with `managed-by: cudn-bgp-routing-operator/<infrastructureName>` for lifecycle management, where `<infrastructureName>` is read automatically from the OpenShift `Infrastructure/cluster` object (`status.infrastructureName`). This cluster-scoped tag ensures multiple clusters sharing the same VPC Route Server do not interfere with each other's peers. If a peer already exists at a desired IP but was not created by the operator (e.g. created manually or by Terraform), the operator adopts it by adding the `managed-by` tag rather than attempting to create a duplicate.
+
+#### AWS authentication (IRSA)
+
+The operator authenticates to AWS using IAM Roles for Service Accounts (IRSA). ROSA HCP clusters have an OIDC provider pre-configured, so the operator's ServiceAccount can assume an IAM role directly — no static credentials or Secrets are needed.
+
+**The cluster admin must complete the following steps before creating the `CUDNBgpConfig` CR with `spec.aws`:**
+
+**Step 1 — Create an IAM role with a trust policy for the operator's ServiceAccount:**
+
+```bash
+# Get the cluster's OIDC provider details
+OIDC_PROVIDER=$(rosa describe cluster -c <cluster-name> -o json | jq -r '.aws.sts.oidc_endpoint_url' | sed 's|https://||')
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+
+aws iam create-role --role-name cudn-bgp-operator \
+  --assume-role-policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [{
+      "Effect": "Allow",
+      "Principal": {"Federated": "arn:aws:iam::'$AWS_ACCOUNT_ID':oidc-provider/'$OIDC_PROVIDER'"},
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "'$OIDC_PROVIDER':sub": "system:serviceaccount:openshift-cudn-bgp-routing:cudn-bgp-routing-controller-manager"
+        }
+      }
+    }]
+  }'
+```
+
+**Step 2 — Attach the required permissions policy:**
+
+```bash
+aws iam put-role-policy --role-name cudn-bgp-operator \
+  --policy-name cudn-bgp-operator-policy \
+  --policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Action": [
+          "sts:GetCallerIdentity",
+          "ec2:DescribeRouteServers",
+          "ec2:DescribeRouteServerEndpoints",
+          "ec2:DescribeSubnets",
+          "ec2:DescribeRouteServerPeers",
+          "ec2:CreateRouteServerPeer",
+          "ec2:DeleteRouteServerPeer",
+          "ec2:CreateTags",
+          "ec2:DescribeInstances",
+          "ec2:ModifyNetworkInterfaceAttribute"
+        ],
+        "Resource": "*"
+      }
+    ]
+  }'
+```
+
+**Step 3 — Annotate the operator's ServiceAccount:**
+
+```bash
+oc annotate serviceaccount cudn-bgp-routing-controller-manager \
+  -n openshift-cudn-bgp-routing \
+  eks.amazonaws.com/role-arn=arn:aws:iam::${AWS_ACCOUNT_ID}:role/cudn-bgp-operator
+```
+
+The OIDC webhook automatically injects `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE` environment variables into the operator pod. The AWS SDK's default credential chain picks these up — no explicit credential configuration is needed in the CR.
 
 ### Multi-cloud extensibility
 
@@ -90,7 +156,7 @@ Currently only AWS platform integration is implemented but the design allows for
 | Endpoint discovery | DescribeRouteServerEndpoints + DescribeSubnets | Cloud Router interface listing | Azure Route Server IP config |
 | BGP peering | VPC Route Server peers | Cloud Router peers | Azure Route Server peers |
 | Forwarding fix | SourceDestCheck=false | canIpForward=true | IP forwarding=enabled |
-| Identity | IRSA / Pod Identity | Workload Identity | Workload Identity |
+| Identity | IRSA (via OIDC) | Workload Identity | Workload Identity |
 
 ### What the operator replaces
 
@@ -190,9 +256,6 @@ spec:
 
   aws:
     region: us-east-1                # terraform output aws_region
-    credentialsSecret:
-      name: cudn-bgp-aws-creds      # Secret with AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
-      namespace: openshift-cudn-bgp-routing
     routeServerIDs:                  # terraform output vpc1_route_server_ids
       - rs-0abc1234def56789          # terraform output vpc1-rs1-id
 ```
@@ -223,8 +286,6 @@ spec:
 | `spec.bgp.availabilityZones[].nodeSelector` | If `availabilityZones` set | Labels selecting BGP-enabled worker nodes in this AZ (e.g. `topology.kubernetes.io/zone`, `bgp_router_subnet`). |
 | `spec.bgp.availabilityZones[].neighbors[]` | If `availabilityZones` set | BGP neighbor IPs and ASN in this AZ's subnet. |
 | `spec.aws.region` | If `spec.aws` set | AWS region where the ROSA cluster and Route Server are deployed. |
-| `spec.aws.credentialsSecret.name` | If `spec.aws` set | Name of a Secret containing `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`. |
-| `spec.aws.credentialsSecret.namespace` | If `spec.aws` set | Namespace of the credentials Secret. |
 | `spec.aws.routeServerIDs[]` | If `spec.aws` set | Route Server IDs for auto-discovery. The operator discovers all endpoints, their ENI addresses (BGP neighbor IPs), AZs (via subnet), and remote ASN. From `terraform output`. |
 
 **CUDNBgpConfig status** (populated by the operator):
@@ -240,58 +301,6 @@ spec:
 | `status.aws.routeServers[].endpoints[].endpointID` | Route Server endpoint ID (e.g. `rse-0abc1111`). |
 | `status.aws.routeServers[].endpoints[].availabilityZone` | AZ derived from the endpoint's subnet. |
 | `status.aws.routeServers[].endpoints[].address` | ENI address of the endpoint (BGP neighbor IP). |
-
-#### AWS credentials Secret
-
-The Secret referenced by `spec.aws.credentialsSecret` must be `Opaque` with two data keys:
-
-| Key | Value |
-|:---|:---|
-| `AWS_ACCESS_KEY_ID` | AWS access key ID |
-| `AWS_SECRET_ACCESS_KEY` | AWS secret access key |
-
-**Step 1 — Create an IAM user and policy in AWS:**
-
-```bash
-aws iam create-user --user-name cudn-bgp-operator
-
-aws iam put-user-policy --user-name cudn-bgp-operator \
-  --policy-name cudn-bgp-operator-policy \
-  --policy-document '{
-    "Version": "2012-10-17",
-    "Statement": [
-      {
-        "Effect": "Allow",
-        "Action": [
-          "sts:GetCallerIdentity",
-          "ec2:DescribeRouteServers",
-          "ec2:DescribeRouteServerEndpoints",
-          "ec2:DescribeSubnets",
-          "ec2:DescribeRouteServerPeers",
-          "ec2:CreateRouteServerPeer",
-          "ec2:DeleteRouteServerPeer",
-          "ec2:CreateTags",
-          "ec2:DescribeInstances",
-          "ec2:ModifyNetworkInterfaceAttribute"
-        ],
-        "Resource": "*"
-      }
-    ]
-  }'
-
-aws iam create-access-key --user-name cudn-bgp-operator
-```
-
-The `create-access-key` command outputs `AccessKeyId` and `SecretAccessKey`. Save them — the secret key is only shown once.
-
-**Step 2 — Create the Secret in OCP:**
-
-```bash
-oc create secret generic cudn-bgp-aws-creds \
-  -n openshift-cudn-bgp-routing \
-  --from-literal=AWS_ACCESS_KEY_ID=AKIA... \
-  --from-literal=AWS_SECRET_ACCESS_KEY=wJalr...
-```
 
 **CUDNBgpRouting** (application teams create per project):
 
@@ -497,7 +506,7 @@ Phase 2: Wait for FRR
           │
           ▼
 Phase 3: Discover Route Server Infrastructure (if spec.aws configured)
-  ├── Verify AWS credentials (sts:GetCallerIdentity)
+  ├── Verify AWS credentials via IRSA (sts:GetCallerIdentity)
   ├── For each spec.aws.routeServerIDs[]:
   │     • DescribeRouteServers → AmazonSideAsn (remote ASN)
   │     • DescribeRouteServerEndpoints → endpoint IDs, ENI addresses, subnet IDs
@@ -589,8 +598,8 @@ Both CRs use the same phase enum. `CUDNBgpRouting` follows `Pending` → `Config
 |:---|:---|:---|
 | `NetworkOperatorPatched` | `PatchFailed` | Failed to patch `Network.operator.openshift.io/cluster` |
 | `FRRNamespaceReady` | `CheckFailed` | Error checking FRR readiness (distinct from simply waiting) |
-| `AWSEndpointsDiscovered` | `AWSCredentialsInvalid` | AWS credential keys in the Secret are empty or `sts:GetCallerIdentity` verification failed |
-| `AWSEndpointsDiscovered` | `AWSDiscoveryFailed` | Failed to build the AWS platform client (e.g. credentials Secret not found, Infrastructure name unavailable) or to discover Route Server endpoints (invalid Route Server ID, insufficient IAM permissions) |
+| `AWSEndpointsDiscovered` | `AWSCredentialsInvalid` | IRSA credentials not available or `sts:GetCallerIdentity` verification failed (check ServiceAccount annotation and IAM role trust policy) |
+| `AWSEndpointsDiscovered` | `AWSDiscoveryFailed` | Failed to build the AWS platform client (e.g. Infrastructure name unavailable) or to discover Route Server endpoints (invalid Route Server ID, insufficient IAM permissions) |
 | `FRRConfigurationApplied` | `ApplyFailed` | Failed to create/update one or more FRRConfigurations |
 | `AWSResourcesReconciled` | `AWSReconcileFailed` | Failed to reconcile Route Server peers or disable source/dest check |
 
@@ -616,22 +625,6 @@ oc get cudnbgprouting cudn1 -o jsonpath='{.status.conditions}' | jq .
 
 ---
 
-## Future Enhancements
-
-### Cloud Pod Identity for credential management
-
-The operator currently authenticates to cloud APIs using static credentials stored in a Kubernetes Secret (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`). This should be replaced with cloud-native pod identity mechanisms that provide short-lived, automatically rotated credentials:
-
-| Cloud | Mechanism | Benefit |
-|:---|:---|:---|
-| AWS | EKS Pod Identity / IRSA | No long-lived keys; IAM role assumed via ServiceAccount annotation |
-| GCP | Workload Identity Federation | GCP IAM credentials injected into pods automatically |
-| Azure | Workload Identity | Azure AD tokens bound to Kubernetes ServiceAccounts |
-
-ROSA HCP clusters already have OIDC pre-configured, making IRSA straightforward. EKS Pod Identity is the newer, simpler alternative that avoids OIDC configuration entirely. The migration path would add pod identity support first, then deprecate `spec.aws.credentialsSecret` in a subsequent release.
-
----
-
 ## Development
 
 ### Prerequisites
@@ -652,10 +645,15 @@ cd rosa-bgp-operator
 
 The operator can be tested on any OCP 4.18+ cluster with an external BGP router — with or without cloud integration.
 
-1. `oc login` to the cluster and ensure the internal image registry is enabled and exposed (already done on most clusters; required on compact/SNO deployments where it defaults to `Removed`):
+1. Ensure the internal image registry is enabled and exposed. Check the current state:
 
 ```bash
-oc login -u kubeadmin -p <password> https://api.<cluster>:6443
+oc get configs.imageregistry.operator.openshift.io cluster -o jsonpath='{.spec.managementState}'
+```
+
+   If it returns `Removed` (common on compact/SNO deployments), enable it:
+
+```bash
 oc patch configs.imageregistry.operator.openshift.io cluster --type merge -p '{"spec":{"managementState":"Managed","storage":{"emptyDir":{}}}}'
 oc patch configs.imageregistry.operator.openshift.io cluster --type merge -p '{"spec":{"defaultRoute":true}}'
 oc wait --for=condition=Available configs.imageregistry.operator.openshift.io cluster --timeout=120s
@@ -692,7 +690,7 @@ oc rollout restart deployment/openshift-cudn-bgp-routing-controller-manager -n o
 
 5. Create the CRs for your environment:
 
-   **For ROSA HCP with AWS VPC Route Server:** provision AWS infrastructure first with [rosa-bgp Terraform](https://github.com/msemanrh/rosa-bgp), then create the CR with Route Server IDs and BGP ASN from `terraform output`. The operator auto-discovers all Route Server endpoints, neighbor IPs, and remote ASN:
+   **For ROSA HCP:** provision AWS infrastructure first with [rosa-bgp Terraform](https://github.com/msemanrh/rosa-bgp), set up the IRSA IAM role (see [AWS authentication](#aws-authentication-irsa)), then create the CR with Route Server IDs and BGP ASN from `terraform output`. The operator auto-discovers all Route Server endpoints, neighbor IPs, and remote ASN:
 
    ```bash
    oc apply -f config/samples/networking_v1alpha1_cudnbgpconfig.yaml
@@ -704,7 +702,7 @@ oc rollout restart deployment/openshift-cudn-bgp-routing-controller-manager -n o
    oc apply -f your-cudnbgpconfig.yaml    # no spec.aws, explicit availabilityZones
    ```
 
-   Then create a labeled namespace and apply the routing CR:
+   Then create a labeled namespace:
 
 ```bash
 cat <<EOF | oc apply -f -
@@ -717,6 +715,7 @@ metadata:
     cluster-udn: prod
 EOF
 ```
+   Finally apply the routing CR:
 
 ```bash
 oc apply -f config/samples/networking_v1alpha1_cudnbgprouting.yaml
@@ -750,6 +749,6 @@ make undeploy
 | `make test-aws` | AWS platform unit tests (mocked EC2/STS) | None |
 | `make test-e2e-aws <profile>` | AWS E2E (full reconciliation lifecycle), profile required | Cluster + AWS credentials |
 
-Provider-specific E2E tests read CR manifests from `test/e2e/manifests/<profile>/` and require a profile name (e.g., `make test-e2e-aws poc`). To test your own ROSA cluster, add a profile directory with your CRs.
+Provider-specific E2E tests read CR manifests from `test/e2e/manifests/<profile>/` and require a profile name (e.g., `make test-e2e-aws poc`). To test your own ROSA cluster, create a profile directory for your cluster.
 
 For full details see [docs/test-strategy.md](docs/test-strategy.md).

@@ -7,7 +7,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
@@ -47,8 +46,6 @@ type Config struct {
 	RouteServerIDs    []string
 	LocalASN          int64
 	LivenessDetection string
-	AccessKeyID       string
-	SecretAccessKey   string
 	ClusterID         string
 }
 
@@ -57,10 +54,6 @@ func New(ctx context.Context, cfg Config) (*Platform, error) {
 }
 
 func newPlatform(ctx context.Context, cfg Config, ec2Override ec2API, stsOverride stsAPI) (*Platform, error) {
-	if cfg.AccessKeyID == "" || cfg.SecretAccessKey == "" {
-		return nil, &CredentialError{Msg: "AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must both be set in the credentials secret"}
-	}
-
 	var ec2Client ec2API
 	var stsClient stsAPI
 
@@ -70,9 +63,6 @@ func newPlatform(ctx context.Context, cfg Config, ec2Override ec2API, stsOverrid
 	} else {
 		awsCfg, err := config.LoadDefaultConfig(ctx,
 			config.WithRegion(cfg.Region),
-			config.WithCredentialsProvider(
-				credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
-			),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("loading AWS config: %w", err)

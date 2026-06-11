@@ -15,7 +15,7 @@ Test strategy for the CUDN BGP Routing Operator. The operator has two layers of 
                    ┌──────────────────────────────┐  ┌──────────────────────────────────────┐
                    │                              │  │                                      │
   Unit tests       │  internal/controller/*_test  │  │  internal/platform/<provider>/*_test │
-                   │  • Config controller         │  │  • Credential validation             │
+                   │  • Config controller         │  │  • IRSA credential verification      │
                    │    Phases 1-5 (mocked        │  │  • Provider ID → instance ID + AZ    │
                    │    CloudPlatform)            │  │  • Endpoint discovery (mocked API)   │
                    │                              │  │  • Peer reconciliation (mocked API)  │
@@ -28,7 +28,7 @@ Test strategy for the CUDN BGP Routing Operator. The operator has two layers of 
                    │                              │  │  • Node-to-peer consistency          │
                    │                              │  │  • Cloud drift recovery              │
                    │                              │  │  • Deletion cleanup (cloud resources)│
-                   │                              │  │  Skip when credentials secret absent │
+                   │                              │  │  Skip when IRSA not configured       │
                    │                              │  │                                      │
                    └──────────────────────────────┘  └──────────────────────────────────────┘
 ```
@@ -40,7 +40,7 @@ Two layers, ordered by infrastructure cost and feedback speed:
 | Layer | What it validates | Speed | Infrastructure |
 |:---|:---|:---|:---|
 | Unit | Reconciliation logic, error handling, edge cases | ~30s | None (fake client + mocks) |
-| E2E | Full operator lifecycle on a real cluster with cloud infrastructure | ~30min | Cluster + cloud infra (Terraform) |
+| E2E | Full operator lifecycle on a real cluster with cloud infrastructure | ~10min | Cluster + cloud infra (Terraform) |
 
 ### Unit test structure
 
@@ -63,7 +63,7 @@ test/e2e/
   e2e_test.go                          ← shared (no tests currently defined)
   aws/
     aws_e2e_suite_test.go
-    aws_e2e_test.go                    ← AWS E2E (requires credentials secret)
+    aws_e2e_test.go                    ← AWS E2E (requires IRSA configured)
   manifests/
     poc/                               ← PoC profile (CUDNBgpConfig + CUDNBgpRouting)
       cudnbgpconfig.yaml
@@ -86,7 +86,7 @@ Provider-independent E2E tests ignore `spec.aws` (or any provider section) in th
 | `make test` | Platform-independent unit tests (`internal/controller/`) | No |
 | `make test-aws` | AWS unit tests, mocked (`internal/platform/aws/`) | No |
 | `make test-e2e` | Shared E2E (operator starts) | No (just cluster) |
-| `make test-e2e-aws <profile>` | AWS E2E tests (`test/e2e/aws/`), profile required | Yes (cluster + AWS secret) |
+| `make test-e2e-aws <profile>` | AWS E2E tests (`test/e2e/aws/`), profile required | Yes (cluster + IRSA configured) |
 
 ## Platform Interface
 
@@ -104,7 +104,7 @@ type CloudPlatform interface {
 
 | Test category | Interface concept | AWS | GCP (future) | Azure (future) |
 |:---|:---|:---|:---|:---|
-| Platform initialization | `New()` constructor | Static credentials + `sts:GetCallerIdentity` validation | Workload Identity | Workload Identity |
+| Platform initialization | `New()` constructor | IRSA (default credential chain) + `sts:GetCallerIdentity` validation | Workload Identity | Workload Identity |
 | Provider ID → instance ID + AZ | `RouterNode.ProviderID` | `aws:///zone/instance` | `gce:///project/zone/instance` | `azure:///...` |
 | Endpoint discovery | `DiscoverEndpoints` | DescribeRouteServers + DescribeRouteServerEndpoints + DescribeSubnets | Cloud Router interface listing | Azure Route Server IP config |
 | Peer reconciliation | `ReconcileNodes` — peering | VPC Route Server peers | Cloud Router peers | Azure Route Server peers |
@@ -126,11 +126,11 @@ When adding a new provider, clone the AWS test plan and replace:
 
 ## OpenShift CI Pipeline
 
-When the project moves to an OpenShift CI-managed repository, the full pipeline applies:
+When the project moves to an OpenShift CI-managed repository, the following pipeline structure can be used:
 
 | Layer | ci-operator type | Trigger |
 |:---|:---|:---|
 | Unit | Container test | Every PR (presubmit) |
 | E2E | Container test + cluster + cloud credentials | On demand (`/test e2e-aws <profile>`) |
 
-One CI job per provider. Each job injects that provider's credentials and runs the corresponding `make` target. Provider E2E targets require a profile name.
+The E2E job requires IRSA configured for the operator's ServiceAccount and a profile name specifying which CRs to apply.

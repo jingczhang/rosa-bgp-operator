@@ -110,15 +110,13 @@ func (m *mockEC2) ModifyNetworkInterfaceAttribute(_ context.Context, input *ec2.
 	return &ec2.ModifyNetworkInterfaceAttributeOutput{}, nil
 }
 
-// --- UT-AWS-01 to UT-AWS-02: Credential Validation ---
+// --- UT-AWS-01 to UT-AWS-02: Credential Verification ---
 
 func TestNew_ValidCredentials(t *testing.T) {
 	p, err := newPlatform(context.Background(), Config{
-		AccessKeyID:     "AKID",
-		SecretAccessKey: "secret",
-		Region:          "us-east-1",
-		RouteServerIDs:  []string{"rs-1"},
-		LocalASN:        65001,
+		Region:         "us-east-1",
+		RouteServerIDs: []string{"rs-1"},
+		LocalASN:       65001,
 	}, &mockEC2{}, &mockSTS{})
 
 	if err != nil {
@@ -129,30 +127,14 @@ func TestNew_ValidCredentials(t *testing.T) {
 	}
 }
 
-func TestNew_InvalidCredentials(t *testing.T) {
-	cases := []struct {
-		name   string
-		key    string
-		secret string
-		sts    *mockSTS
-	}{
-		{"empty key", "", "secret", &mockSTS{}},
-		{"empty secret", "AKID", "", &mockSTS{}},
-		{"STS auth failure", "AKID", "secret", &mockSTS{err: errors.New("InvalidClientTokenId")}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := newPlatform(context.Background(), Config{
-				AccessKeyID:     tc.key,
-				SecretAccessKey: tc.secret,
-				Region:          "us-east-1",
-			}, &mockEC2{}, tc.sts)
+func TestNew_STSVerificationFailure(t *testing.T) {
+	_, err := newPlatform(context.Background(), Config{
+		Region: "us-east-1",
+	}, &mockEC2{}, &mockSTS{err: errors.New("InvalidClientTokenId")})
 
-			var credErr *CredentialError
-			if !errors.As(err, &credErr) {
-				t.Fatalf("expected CredentialError, got: %v", err)
-			}
-		})
+	var credErr *CredentialError
+	if !errors.As(err, &credErr) {
+		t.Fatalf("expected CredentialError, got: %v", err)
 	}
 }
 
@@ -251,21 +233,10 @@ func TestReconcilePeers_MultiAZCreate(t *testing.T) {
 
 func TestReconcilePeers_AdoptPreExistingUntagged(t *testing.T) {
 	mock := &mockEC2{
-		describePeersFunc: func(input *ec2.DescribeRouteServerPeersInput) (*ec2.DescribeRouteServerPeersOutput, error) {
-			hasTagFilter := false
-			for _, f := range input.Filters {
-				if aws.ToString(f.Name) == "tag:managed-by" {
-					hasTagFilter = true
-				}
-			}
-			if hasTagFilter {
-				// listManagedPeers: no managed peers
-				return &ec2.DescribeRouteServerPeersOutput{}, nil
-			}
-			// listAllPeers: return untagged peer with desired IP
+		describePeersFunc: func(_ *ec2.DescribeRouteServerPeersInput) (*ec2.DescribeRouteServerPeersOutput, error) {
 			return &ec2.DescribeRouteServerPeersOutput{
 				RouteServerPeers: []ec2types.RouteServerPeer{
-					{PeerAddress: aws.String("10.0.1.10"), RouteServerPeerId: aws.String("peer-existing")},
+					{PeerAddress: aws.String("10.0.1.10"), RouteServerPeerId: aws.String("peer-existing"), RouteServerEndpointId: aws.String("ep-a1")},
 				},
 			}, nil
 		},
@@ -298,23 +269,17 @@ func TestReconcilePeers_AdoptPreExistingUntagged(t *testing.T) {
 
 func TestReconcilePeers_DeleteStalePeer(t *testing.T) {
 	mock := &mockEC2{
-		describePeersFunc: func(input *ec2.DescribeRouteServerPeersInput) (*ec2.DescribeRouteServerPeersOutput, error) {
-			hasTagFilter := false
-			for _, f := range input.Filters {
-				if aws.ToString(f.Name) == "tag:managed-by" {
-					hasTagFilter = true
-				}
-			}
-			if hasTagFilter {
-				return &ec2.DescribeRouteServerPeersOutput{
-					RouteServerPeers: []ec2types.RouteServerPeer{
-						{PeerAddress: aws.String("10.0.1.99"), RouteServerPeerId: aws.String("peer-stale")},
-					},
-				}, nil
-			}
+		describePeersFunc: func(_ *ec2.DescribeRouteServerPeersInput) (*ec2.DescribeRouteServerPeersOutput, error) {
 			return &ec2.DescribeRouteServerPeersOutput{
 				RouteServerPeers: []ec2types.RouteServerPeer{
-					{PeerAddress: aws.String("10.0.1.99"), RouteServerPeerId: aws.String("peer-stale")},
+					{
+						PeerAddress:           aws.String("10.0.1.99"),
+						RouteServerPeerId:     aws.String("peer-stale"),
+						RouteServerEndpointId: aws.String("ep-a1"),
+						Tags: []ec2types.Tag{
+							{Key: aws.String("managed-by"), Value: aws.String("cudn-bgp-routing-operator/test-cluster")},
+						},
+					},
 				},
 			}, nil
 		},
@@ -374,12 +339,17 @@ func TestReconcilePeers_BFDLivenessDetection(t *testing.T) {
 }
 
 func TestCleanup_DeletesAllManagedPeers(t *testing.T) {
+	managedTag := []ec2types.Tag{{Key: aws.String("managed-by"), Value: aws.String("cudn-bgp-routing-operator/test-cluster")}}
 	mock := &mockEC2{
-		describePeersFunc: func(input *ec2.DescribeRouteServerPeersInput) (*ec2.DescribeRouteServerPeersOutput, error) {
-			// Return 1 peer per endpoint to simulate 6 total across 3 AZs × 2 endpoints
+		describePeersFunc: func(_ *ec2.DescribeRouteServerPeersInput) (*ec2.DescribeRouteServerPeersOutput, error) {
 			return &ec2.DescribeRouteServerPeersOutput{
 				RouteServerPeers: []ec2types.RouteServerPeer{
-					{PeerAddress: aws.String("10.0.0.1"), RouteServerPeerId: aws.String("peer-" + input.Filters[0].Values[0])},
+					{PeerAddress: aws.String("10.0.0.1"), RouteServerPeerId: aws.String("peer-ep-a1"), RouteServerEndpointId: aws.String("ep-a1"), Tags: managedTag},
+					{PeerAddress: aws.String("10.0.0.2"), RouteServerPeerId: aws.String("peer-ep-a2"), RouteServerEndpointId: aws.String("ep-a2"), Tags: managedTag},
+					{PeerAddress: aws.String("10.0.0.3"), RouteServerPeerId: aws.String("peer-ep-b1"), RouteServerEndpointId: aws.String("ep-b1"), Tags: managedTag},
+					{PeerAddress: aws.String("10.0.0.4"), RouteServerPeerId: aws.String("peer-ep-b2"), RouteServerEndpointId: aws.String("ep-b2"), Tags: managedTag},
+					{PeerAddress: aws.String("10.0.0.5"), RouteServerPeerId: aws.String("peer-ep-c1"), RouteServerEndpointId: aws.String("ep-c1"), Tags: managedTag},
+					{PeerAddress: aws.String("10.0.0.6"), RouteServerPeerId: aws.String("peer-ep-c2"), RouteServerEndpointId: aws.String("ep-c2"), Tags: managedTag},
 				},
 			}, nil
 		},
@@ -504,12 +474,12 @@ func newDiscoveryMock() *mockEC2 {
 		describeRSEFunc: func(_ *ec2.DescribeRouteServerEndpointsInput) (*ec2.DescribeRouteServerEndpointsOutput, error) {
 			return &ec2.DescribeRouteServerEndpointsOutput{
 				RouteServerEndpoints: []ec2types.RouteServerEndpoint{
-					{RouteServerEndpointId: aws.String("rse-a1"), SubnetId: aws.String("subnet-a"), EniAddress: aws.String("10.0.1.47")},
-					{RouteServerEndpointId: aws.String("rse-a2"), SubnetId: aws.String("subnet-a"), EniAddress: aws.String("10.0.1.183")},
-					{RouteServerEndpointId: aws.String("rse-b1"), SubnetId: aws.String("subnet-b"), EniAddress: aws.String("10.0.2.91")},
-					{RouteServerEndpointId: aws.String("rse-b2"), SubnetId: aws.String("subnet-b"), EniAddress: aws.String("10.0.2.145")},
-					{RouteServerEndpointId: aws.String("rse-c1"), SubnetId: aws.String("subnet-c"), EniAddress: aws.String("10.0.3.62")},
-					{RouteServerEndpointId: aws.String("rse-c2"), SubnetId: aws.String("subnet-c"), EniAddress: aws.String("10.0.3.118")},
+					{RouteServerEndpointId: aws.String("rse-a1"), RouteServerId: aws.String("rs-1"), SubnetId: aws.String("subnet-a"), EniAddress: aws.String("10.0.1.47")},
+					{RouteServerEndpointId: aws.String("rse-a2"), RouteServerId: aws.String("rs-1"), SubnetId: aws.String("subnet-a"), EniAddress: aws.String("10.0.1.183")},
+					{RouteServerEndpointId: aws.String("rse-b1"), RouteServerId: aws.String("rs-1"), SubnetId: aws.String("subnet-b"), EniAddress: aws.String("10.0.2.91")},
+					{RouteServerEndpointId: aws.String("rse-b2"), RouteServerId: aws.String("rs-1"), SubnetId: aws.String("subnet-b"), EniAddress: aws.String("10.0.2.145")},
+					{RouteServerEndpointId: aws.String("rse-c1"), RouteServerId: aws.String("rs-1"), SubnetId: aws.String("subnet-c"), EniAddress: aws.String("10.0.3.62")},
+					{RouteServerEndpointId: aws.String("rse-c2"), RouteServerId: aws.String("rs-1"), SubnetId: aws.String("subnet-c"), EniAddress: aws.String("10.0.3.118")},
 				},
 			}, nil
 		},
@@ -588,23 +558,11 @@ func TestDiscoverEndpoints_MultipleRouteServers(t *testing.T) {
 				},
 			}, nil
 		},
-		describeRSEFunc: func(input *ec2.DescribeRouteServerEndpointsInput) (*ec2.DescribeRouteServerEndpointsOutput, error) {
-			rsID := ""
-			for _, f := range input.Filters {
-				if aws.ToString(f.Name) == "route-server-id" {
-					rsID = f.Values[0]
-				}
-			}
-			if rsID == "rs-1" {
-				return &ec2.DescribeRouteServerEndpointsOutput{
-					RouteServerEndpoints: []ec2types.RouteServerEndpoint{
-						{RouteServerEndpointId: aws.String("rse-1a"), SubnetId: aws.String("subnet-a"), EniAddress: aws.String("10.0.1.10")},
-					},
-				}, nil
-			}
+		describeRSEFunc: func(_ *ec2.DescribeRouteServerEndpointsInput) (*ec2.DescribeRouteServerEndpointsOutput, error) {
 			return &ec2.DescribeRouteServerEndpointsOutput{
 				RouteServerEndpoints: []ec2types.RouteServerEndpoint{
-					{RouteServerEndpointId: aws.String("rse-2a"), SubnetId: aws.String("subnet-a"), EniAddress: aws.String("10.0.1.20")},
+					{RouteServerEndpointId: aws.String("rse-1a"), RouteServerId: aws.String("rs-1"), SubnetId: aws.String("subnet-a"), EniAddress: aws.String("10.0.1.10")},
+					{RouteServerEndpointId: aws.String("rse-2a"), RouteServerId: aws.String("rs-2"), SubnetId: aws.String("subnet-a"), EniAddress: aws.String("10.0.1.20")},
 				},
 			}, nil
 		},

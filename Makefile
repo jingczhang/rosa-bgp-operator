@@ -121,7 +121,7 @@ test-e2e: ## Run shared e2e tests (requires oc login to cluster).
 	go test ./test/e2e/ -v -timeout 2m -count=1
 
 .PHONY: test-e2e-aws
-test-e2e-aws: ## Run AWS e2e tests (requires cluster + AWS credentials secret). Usage: make test-e2e-aws <profile>
+test-e2e-aws: ## Run AWS e2e tests (requires cluster + IRSA configured). Usage: make test-e2e-aws <profile>
 	$(eval E2E_PROFILE := $(filter-out $@,$(MAKECMDGOALS)))
 	@[ -n "$(E2E_PROFILE)" ] || { echo "Usage: make test-e2e-aws <profile-name>"; exit 1; }
 	E2E_PROFILE=$(E2E_PROFILE) go test ./test/e2e/aws/ -v -timeout 30m -count=1

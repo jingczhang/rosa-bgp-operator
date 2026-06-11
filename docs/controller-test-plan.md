@@ -49,7 +49,7 @@ Tests for `CUDNBgpConfigReconciler` covering Phases 1-5 and deletion lifecycle.
 |:---|:---|:---|:---|
 | UT-01 | Full reconcile without cloud (Phases 1-2, 4) | Network CR exists, FRR namespace + pod running, explicit `bgp.availabilityZones` | Network patched, FRRConfigurations created from explicit neighbors, phase=Ready with 3 conditions (NetworkOperatorPatched, FRRNamespaceReady, FRRConfigurationApplied) |
 | UT-02 | Full reconcile with cloud (Phases 1-5) | spec.aws set with routeServerIDs, mock platform with discovery | AWSEndpointsDiscovered=True, FRRConfigurations created from discovered neighbors, ReconcileNodes called, AWSResourcesReconciled=True, phase=Ready with 5 conditions |
-| UT-03 | Phase 3 credential failure | Mock platform builder returns CredentialError | AWSEndpointsDiscovered=False, reason=AWSCredentialsInvalid, phase=Degraded |
+| UT-03 | Phase 3 credential failure (IRSA) | Mock platform builder returns CredentialError | AWSEndpointsDiscovered=False, reason=AWSCredentialsInvalid, phase=Degraded |
 | UT-04 | Phase 3 discovery failure | Mock platform discovery returns error | AWSEndpointsDiscovered=False, reason=AWSDiscoveryFailed, phase=Degraded, requeue 30s |
 | UT-05 | Phase 5 failure | Mock platform ReconcileNodes returns error | AWSResourcesReconciled=False, reason=AWSReconcileFailed, phase=Degraded, requeue 30s |
 | UT-06 | Node filtering | 5 nodes: 3 complete, 1 missing IP, 1 missing AZ | Only 3 RouterNodes passed to ReconcileNodes |

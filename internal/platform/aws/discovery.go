@@ -92,15 +92,17 @@ func (p *Platform) describeRouteServer(ctx context.Context, routeServerID string
 }
 
 func (p *Platform) describeRouteServerEndpoints(ctx context.Context, routeServerID string) ([]ec2types.RouteServerEndpoint, error) {
-	output, err := p.ec2Client.DescribeRouteServerEndpoints(ctx, &ec2.DescribeRouteServerEndpointsInput{
-		Filters: []ec2types.Filter{
-			{Name: aws.String("route-server-id"), Values: []string{routeServerID}},
-		},
-	})
+	output, err := p.ec2Client.DescribeRouteServerEndpoints(ctx, &ec2.DescribeRouteServerEndpointsInput{})
 	if err != nil {
 		return nil, err
 	}
-	return output.RouteServerEndpoints, nil
+	var filtered []ec2types.RouteServerEndpoint
+	for _, ep := range output.RouteServerEndpoints {
+		if aws.ToString(ep.RouteServerId) == routeServerID {
+			filtered = append(filtered, ep)
+		}
+	}
+	return filtered, nil
 }
 
 func (p *Platform) resolveSubnetAZs(ctx context.Context, subnetIDs []string) (map[string]string, error) {

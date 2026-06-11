@@ -12,8 +12,5 @@ spec:
 
   aws:
     region: us-east-1
-    credentialsSecret:
-      name: cudn-bgp-aws-creds
-      namespace: openshift-cudn-bgp-routing
     routeServerIDs:               # terraform output vpc1-rs1-id
       - rs-0abc1234
