@@ -102,7 +102,7 @@ aws iam create-role --role-name cudn-bgp-operator \
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {
         "StringEquals": {
-          "'$OIDC_PROVIDER':sub": "system:serviceaccount:openshift-cudn-bgp-routing:cudn-bgp-routing-controller-manager"
+          "'$OIDC_PROVIDER':sub": "system:serviceaccount:openshift-cudn-bgp-routing:openshift-cudn-bgp-routing-controller-manager"
         }
       }
     }]
@@ -140,7 +140,7 @@ aws iam put-role-policy --role-name cudn-bgp-operator \
 **Step 3 — Annotate the operator's ServiceAccount:**
 
 ```bash
-oc annotate serviceaccount cudn-bgp-routing-controller-manager \
+oc annotate serviceaccount openshift-cudn-bgp-routing-controller-manager \
   -n openshift-cudn-bgp-routing \
   eks.amazonaws.com/role-arn=arn:aws:iam::${AWS_ACCOUNT_ID}:role/cudn-bgp-operator
 ```
@@ -629,7 +629,7 @@ oc get cudnbgprouting cudn1 -o jsonpath='{.status.conditions}' | jq .
 
 ### Prerequisites
 
-- Go 1.24+
+- Go 1.24+ installed locally. Some of the build happens outside of a container.
 - operator-sdk v1.42+
 - `oc` CLI logged into an OCP 4.18+ cluster
 - Podman (for image builds only)
@@ -645,7 +645,9 @@ cd rosa-bgp-operator
 
 The operator can be tested on any OCP 4.18+ cluster with an external BGP router — with or without cloud integration.
 
-1. Ensure the internal image registry is enabled and exposed. Check the current state:
+1. Ensure the internal image registry is enabled and exposed.
+
+   Check whether it is currently enabled (by default, it is enabled on ROSA):
 
 ```bash
 oc get configs.imageregistry.operator.openshift.io cluster -o jsonpath='{.spec.managementState}'
@@ -655,8 +657,14 @@ oc get configs.imageregistry.operator.openshift.io cluster -o jsonpath='{.spec.m
 
 ```bash
 oc patch configs.imageregistry.operator.openshift.io cluster --type merge -p '{"spec":{"managementState":"Managed","storage":{"emptyDir":{}}}}'
-oc patch configs.imageregistry.operator.openshift.io cluster --type merge -p '{"spec":{"defaultRoute":true}}'
 oc wait --for=condition=Available configs.imageregistry.operator.openshift.io cluster --timeout=120s
+```
+
+   Check whether it currently is exposing a default route to outside of the cluster (by default, it is not on ROSA):
+
+```bash
+oc patch configs.imageregistry.operator.openshift.io cluster --type merge -p '{"spec":{"defaultRoute":true}}'
+oc wait route/default-route -n openshift-image-registry --for=jsonpath='{.status.ingress[0].conditions[0].status}'=True --timeout=120s
 ```
 
 2. Build the image:
@@ -693,6 +701,7 @@ oc rollout restart deployment/openshift-cudn-bgp-routing-controller-manager -n o
    **For ROSA HCP:** provision AWS infrastructure first with [rosa-bgp Terraform](https://github.com/msemanrh/rosa-bgp), set up the IRSA IAM role (see [AWS authentication](#aws-authentication-irsa)), then create the CR with Route Server IDs and BGP ASN from `terraform output`. The operator auto-discovers all Route Server endpoints, neighbor IPs, and remote ASN:
 
    ```bash
+   $EDITOR config/samples/networking_v1alpha1_cudnbgpconfig.yaml # Add needed Terraform outputs
    oc apply -f config/samples/networking_v1alpha1_cudnbgpconfig.yaml
    ```
 
