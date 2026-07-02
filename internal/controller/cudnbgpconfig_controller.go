@@ -330,12 +330,10 @@ func (r *CUDNBgpConfigReconciler) reconcileDelete(ctx context.Context, config *n
 		}
 		p, err := buildPlatform(ctx, r.Client, config)
 		if err != nil {
-			return ctrl.Result{}, fmt.Errorf("building AWS platform for cleanup: %w", err)
-		}
-		if _, err := p.DiscoverEndpoints(ctx); err != nil {
-			return ctrl.Result{}, fmt.Errorf("discovering endpoints for cleanup: %w", err)
-		}
-		if err := p.Cleanup(ctx); err != nil {
+			log.Error(err, "unable to build AWS platform for cleanup, skipping cloud resource cleanup")
+		} else if _, err := p.DiscoverEndpoints(ctx); err != nil {
+			log.Error(err, "unable to discover endpoints for cleanup, skipping cloud resource cleanup")
+		} else if err := p.Cleanup(ctx); err != nil {
 			return ctrl.Result{}, fmt.Errorf("cleaning up AWS resources: %w", err)
 		}
 	}
@@ -359,6 +357,7 @@ func (r *CUDNBgpConfigReconciler) setDegraded(
 	config *networkingv1alpha1.CUDNBgpConfig,
 	condType, reason, message string,
 ) (ctrl.Result, error) {
+	logf.FromContext(ctx).Error(fmt.Errorf("%s: %s", reason, message), "setting degraded status")
 	config.Status.Phase = networkingv1alpha1.PhaseDegraded
 	meta.SetStatusCondition(&config.Status.Conditions, metav1.Condition{
 		Type:               condType,
@@ -370,7 +369,7 @@ func (r *CUDNBgpConfigReconciler) setDegraded(
 	if err := r.Status().Update(ctx, config); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: 30 * time.Second}, fmt.Errorf("%s: %s", reason, message)
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
 func nodeRelevantChangePredicate() predicate.Predicate {

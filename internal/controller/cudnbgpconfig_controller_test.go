@@ -584,6 +584,39 @@ func TestConfigReconcile_AWSNodeFiltering(t *testing.T) {
 	}
 }
 
+func TestConfigReconcile_DeleteSucceedsWithCredentialFailure(t *testing.T) {
+	now := metav1.Now()
+	config := newTestCUDNBgpConfigWithAWS()
+	config.Finalizers = []string{ConfigFinalizerName}
+	config.DeletionTimestamp = &now
+
+	s := configTestScheme()
+	c := fake.NewClientBuilder().WithScheme(s).
+		WithObjects(config).
+		WithStatusSubresource(config).
+		Build()
+
+	r := &CUDNBgpConfigReconciler{
+		Client: c, Scheme: s,
+		PlatformBuilder: func(_ context.Context, _ client.Client, _ *networkingv1alpha1.CUDNBgpConfig) (platform.CloudPlatform, error) {
+			return nil, &awsplatform.CredentialError{Msg: "invalid credentials"}
+		},
+	}
+
+	_, err := r.Reconcile(context.Background(), reconcile.Request{NamespacedName: types.NamespacedName{Name: "cluster"}})
+	if err != nil {
+		t.Fatalf("deletion should succeed even with credential failure, got: %v", err)
+	}
+
+	updated := &networkingv1alpha1.CUDNBgpConfig{}
+	_ = c.Get(context.Background(), types.NamespacedName{Name: "cluster"}, updated)
+	for _, f := range updated.Finalizers {
+		if f == ConfigFinalizerName {
+			t.Error("finalizer should be removed even when AWS credentials are invalid")
+		}
+	}
+}
+
 func TestConfigReconcile_DeleteSuccessful(t *testing.T) {
 	mock := &mockPlatform{}
 	now := metav1.Now()

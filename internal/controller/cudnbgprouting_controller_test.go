@@ -154,11 +154,14 @@ func TestRoutingReconcile_NoNamespace(t *testing.T) {
 		Build()
 
 	r := &CUDNBgpRoutingReconciler{Client: c, Scheme: s}
-	_, err := r.Reconcile(context.Background(), reconcile.Request{
+	result, err := r.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: "prod"},
 	})
-	if err == nil {
-		t.Fatal("expected error when no labeled namespace exists")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter != 30*time.Second {
+		t.Errorf("expected 30s degraded requeue, got %v", result.RequeueAfter)
 	}
 
 	updated := &networkingv1alpha1.CUDNBgpRouting{}
@@ -276,11 +279,14 @@ func TestRoutingReconcile_DuplicateNetworkName(t *testing.T) {
 		Build()
 
 	r := &CUDNBgpRoutingReconciler{Client: c, Scheme: s}
-	_, err := r.Reconcile(context.Background(), reconcile.Request{
+	result, err := r.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: "prod"},
 	})
-	if err == nil {
-		t.Fatal("expected error for duplicate network name")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.RequeueAfter != 30*time.Second {
+		t.Errorf("expected 30s degraded requeue, got %v", result.RequeueAfter)
 	}
 
 	updated := &networkingv1alpha1.CUDNBgpRouting{}

@@ -111,7 +111,8 @@ var _ = BeforeSuite(func() {
 	By("discovering route server endpoints from AWS")
 	endpointsByAZ = make(map[string][]string)
 	for _, rsID := range bgpConfig.Spec.AWS.RouteServerIDs {
-		rseOut, rseErr := ec2Client.DescribeRouteServerEndpoints(context.Background(), &ec2.DescribeRouteServerEndpointsInput{})
+		rseOut, rseErr := ec2Client.DescribeRouteServerEndpoints(
+			context.Background(), &ec2.DescribeRouteServerEndpointsInput{})
 		Expect(rseErr).NotTo(HaveOccurred())
 		subnetIDs := make([]string, 0)
 		epBySubnet := make(map[string][]string)

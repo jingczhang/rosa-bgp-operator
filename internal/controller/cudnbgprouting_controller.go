@@ -186,6 +186,7 @@ func (r *CUDNBgpRoutingReconciler) setDegraded(
 	routing *networkingv1alpha1.CUDNBgpRouting,
 	condType, reason, message string,
 ) (ctrl.Result, error) {
+	logf.FromContext(ctx).Error(fmt.Errorf("%s: %s", reason, message), "setting degraded status")
 	routing.Status.Phase = networkingv1alpha1.PhaseDegraded
 	meta.SetStatusCondition(&routing.Status.Conditions, metav1.Condition{
 		Type:               condType,
@@ -197,7 +198,7 @@ func (r *CUDNBgpRoutingReconciler) setDegraded(
 	if err := r.Status().Update(ctx, routing); err != nil {
 		return ctrl.Result{}, err
 	}
-	return ctrl.Result{RequeueAfter: 30 * time.Second}, fmt.Errorf("%s: %s", reason, message)
+	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
 func (r *CUDNBgpRoutingReconciler) SetupWithManager(mgr ctrl.Manager) error {
