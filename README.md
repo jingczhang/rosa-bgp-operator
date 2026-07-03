@@ -147,6 +147,14 @@ oc annotate serviceaccount openshift-cudn-bgp-routing-controller-manager \
 
 The OIDC webhook automatically injects `AWS_ROLE_ARN` and `AWS_WEB_IDENTITY_TOKEN_FILE` environment variables into the operator pod. The AWS SDK's default credential chain picks these up — no explicit credential configuration is needed in the CR.
 
+**Important:** The OIDC webhook only injects credentials at **pod creation time**. If the operator is already running when you complete the IRSA setup (or if you correct a misconfigured IAM role or ServiceAccount annotation), the running pod will not pick up the new credentials. You must restart the operator after making credential changes:
+
+```bash
+oc rollout restart deployment/openshift-cudn-bgp-routing-controller-manager -n openshift-cudn-bgp-routing
+```
+
+The operator reports credential issues as `AWSCredentialsInvalid` in the `CUDNBgpConfig` status. If you see this condition, verify the IAM role trust policy and permissions, then restart the operator.
+
 ### Multi-cloud extensibility
 
 Currently only AWS platform integration is implemented but the design allows for additional providers. Each cloud maps to equivalent concepts:
