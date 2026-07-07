@@ -265,7 +265,7 @@ spec:
   aws:
     region: us-east-1                # terraform output aws_region
     routeServerIDs:                  # terraform output vpc1_route_server_ids
-      - rs-0abc1234def56789          # terraform output vpc1-rs1-id
+      - rs-0abc123456789abcd
 ```
 
 ### CUDNBgpRouting (one per application project - using PoC configuration)

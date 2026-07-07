@@ -1,7 +1,7 @@
 apiVersion: networking.openshift.io/v1alpha1
 kind: CUDNBgpRouting
 metadata:
-  name: prod
+  name: cudn1
 spec:
   network:
     name: prod
