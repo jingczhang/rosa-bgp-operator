@@ -9,7 +9,7 @@ Automated test plan for the CUDN BGP Routing Operator's AWS platform integration
 
 ## Test Configuration
 
-Based on the rosa-bgp PoC configuration:
+**Unit tests** hardcode values based on the rosa-bgp PoC configuration (mocked EC2/STS clients, no AWS credentials or cluster required):
 
 | Field | Value |
 |:---|:---|
@@ -22,9 +22,9 @@ Based on the rosa-bgp PoC configuration:
 | BGP router nodes | 1 per AZ (3 total), labeled `bgp_router: "true"` |
 | CUDN network | name=`prod`, CIDR from Terraform outputs |
 
-Unit tests hardcode these values with mocked EC2/STS clients — no AWS credentials or cluster required. The default credential chain (IRSA) is bypassed in unit tests via mock injection. Discovery API calls (`DescribeRouteServers`, `DescribeRouteServerEndpoints`, `DescribeSubnets`) are mocked alongside the existing peer and instance mocks.
+The default credential chain (IRSA) is bypassed in unit tests via mock injection. Discovery API calls (`DescribeRouteServers`, `DescribeRouteServerEndpoints`, `DescribeSubnets`) are mocked alongside the existing peer and instance mocks.
 
-E2E tests read CR manifests from a profile directory (`test/e2e/manifests/<profile>/`). AWS E2E tests require `spec.aws` to be set. The `poc` profile is provided as an example; a custom profile matching the actual ROSA deployment is needed for real testing. The test framework derives expected state from the operator's discovered `status.aws.routeServers` and cluster nodes — no topology is hardcoded in the test code.
+**E2E tests** read CR manifests from a profile directory (`test/e2e/manifests/<profile>/`). AWS E2E tests require `spec.aws` to be set. The `rosa-bgp-poc` profile is provided as an example; a custom profile matching the actual ROSA deployment is needed for real testing. The test framework derives expected state from the operator's discovered `status.aws.routeServers` and cluster nodes — no topology is hardcoded in the test code.
 
 | Component | How discovered |
 |:---|:---|
@@ -136,13 +136,26 @@ Full operator lifecycle on a ROSA HCP cluster with VPC Route Server infrastructu
 
 ```bash
 # Prerequisites:
-# - oc login to ROSA HCP cluster
-# - IRSA IAM role configured for operator ServiceAccount
 # - Infrastructure provisioned (Terraform or equivalent)
+# - oc login to ROSA HCP cluster
+# - Operator deployed to the cluster
+# - IRSA IAM role configured for operator ServiceAccount
+# - AWS credentials configured on the test runner
 
 # Profile is mandatory — specifies which CRs to apply (must have spec.aws)
-make test-e2e-aws poc
-make test-e2e-aws my-cluster
+make test-e2e-aws rosa-bgp-poc 
 ```
 
 Profiles are directories under `test/e2e/manifests/` containing `cudnbgpconfig.yaml` and `cudnbgprouting.yaml`. To test your own ROSA cluster, create a profile directory with your CRs, configure IRSA for the operator's ServiceAccount, and run `make test-e2e-aws <profile-name>`.
+
+#### AWS credentials for the test runner
+
+The operator authenticates to AWS via IRSA (inside the cluster). The test binary runs outside the cluster and makes its own AWS API calls to verify and mutate AWS resources (Route Server peers, SourceDestCheck). It uses the [AWS default credential chain](https://docs.aws.amazon.com/sdkref/latest/guide/standardized-credentials.html) and needs the same EC2/STS permissions as the operator:
+
+```bash
+export AWS_ACCESS_KEY_ID=<key>
+export AWS_SECRET_ACCESS_KEY=<secret>
+export AWS_REGION=us-east-1       # must match spec.aws.region in the profile
+```
+
+Alternatively, configure credentials via `~/.aws/credentials` or `aws sso login`.

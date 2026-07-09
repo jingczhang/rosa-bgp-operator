@@ -622,7 +622,20 @@ Both CRs use the same phase enum. `CUDNBgpRouting` follows `Pending` → `Config
 | `CUDNCreated` | `CUDNFailed` | Failed to create/update the ClusterUserDefinedNetwork |
 | `RouteAdvertisementsCreated` | `RAFailed` | Failed to ensure the shared RouteAdvertisements |
 
-On any `Degraded` state, the controller automatically retries every 30 seconds. In the `Ready` state, both controllers re-reconcile every 5 minutes to self-heal configuration drift (e.g. if a downstream resource such as an FRRConfiguration, ClusterUserDefinedNetwork, or RouteAdvertisements is manually deleted or modified).
+On any `Degraded` state, the controller automatically retries every 30 seconds.
+
+### Watches and drift recovery
+
+Both controllers watch their downstream resources for immediate drift detection. If a managed resource is deleted or modified externally, the responsible controller is notified and reconciles.
+
+| Controller | Watches | Triggers reconcile of |
+|:---|:---|:---|
+| CUDNBgpConfig | `FRRConfiguration` (label-filtered) | `cluster` singleton |
+| CUDNBgpConfig | `Node` (label/address/providerID changes) | `cluster` singleton |
+| CUDNBgpRouting | `ClusterUserDefinedNetwork` (label-filtered) | owning `CUDNBgpRouting` CR |
+| CUDNBgpRouting | `RouteAdvertisements` (label-filtered) | all `CUDNBgpRouting` CRs |
+
+Only resources labeled `app.kubernetes.io/managed-by: cudn-bgp-routing-operator` trigger reconciliation. In addition, both controllers re-reconcile every 5 minutes in the `Ready` state as a safety-net backstop.
 
 Inspect the failing condition for the root cause:
 
@@ -764,8 +777,9 @@ make undeploy
 |:---|:---|:---|
 | `make test` | Platform-independent unit tests (controllers + helpers) | None |
 | `make test-aws` | AWS platform unit tests (mocked EC2/STS) | None |
+| `make test-e2e <profile>` | E2E (BGP session verification + drift recovery), profile required | Cluster + external BGP peer |
 | `make test-e2e-aws <profile>` | AWS E2E (full reconciliation lifecycle), profile required | Cluster + AWS credentials |
 
-Provider-specific E2E tests read CR manifests from `test/e2e/manifests/<profile>/` and require a profile name (e.g., `make test-e2e-aws poc`). To test your own ROSA cluster, create a profile directory for your cluster.
+E2E tests read CR manifests from `test/e2e/manifests/<profile>/` and require a profile name. Shared E2E tests use CRs with explicit `availabilityZones` (no `spec.aws`); AWS E2E tests require `spec.aws`. To test your own cluster, create a profile directory with your CRs.
 
 For full details see [docs/test-strategy.md](docs/test-strategy.md).

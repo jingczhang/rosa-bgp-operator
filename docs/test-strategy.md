@@ -12,35 +12,37 @@ Test strategy for the CUDN BGP Routing Operator. The operator has two layers of 
 
 ```
                       Platform-independent              Provider-specific (AWS/GCP/Azure)
-                   ┌──────────────────────────────┐  ┌──────────────────────────────────────┐
-                   │                              │  │                                      │
-  Unit tests       │  internal/controller/*_test  │  │  internal/platform/<provider>/*_test │
-                   │  • Config controller         │  │  • IRSA credential verification      │
-                   │    Phases 1-5 (mocked        │  │  • Provider ID → instance ID + AZ    │
-                   │    CloudPlatform)            │  │  • Endpoint discovery (mocked API)   │
-                   │                              │  │  • Peer reconciliation (mocked API)  │
-                   │  • Helpers (NS, CUDN, FRR,   │  │  • Forwarding fix (mocked API)       │
-                   │    RouteAdvertisements)      │  │                                      │
-                   │  • Routing controller        │  │                                      │
-                   │                              │  │                                      │
-  E2E tests        │  test/e2e/ (shared tests)    │  │  test/e2e/<provider>/ tests          │
-                   │  • (none currently defined)  │  │  • Full stack reconcile on cluster   │
-                   │                              │  │  • Node-to-peer consistency          │
-                   │                              │  │  • Cloud drift recovery              │
-                   │                              │  │  • Deletion cleanup (cloud resources)│
-                   │                              │  │  Skip when IRSA not configured       │
-                   │                              │  │                                      │
-                   └──────────────────────────────┘  └──────────────────────────────────────┘
+                   ┌──────────────────────────────┐  ┌──────────────────────────────────────────┐
+                   │                              │  │                                          │
+  Unit tests       │  internal/controller/*_test  │  │  internal/platform/<provider>/*_test     │
+                   │  • Config controller         │  │  • Cloud credential verification         │
+                   │    Phases 1-5 (mocked        │  │  • Provider ID → instance ID + AZ        │
+                   │    CloudPlatform)            │  │  • Endpoint discovery (mocked API)       │
+                   │                              │  │  • Peer reconciliation (mocked API)      │
+                   │  • Helpers (NS, CUDN, FRR,   │  │  • Forwarding fix (mocked API)           │
+                   │    RouteAdvertisements)      │  │                                          │
+                   │  • Routing controller        │  │                                          │
+                   │                              │  │                                          │
+  E2E tests        │  test/e2e/ (shared tests)    │  │  test/e2e/<provider>/ tests              │
+                   │  • Full stack reconcile +    │  │  • Full stack reconcile on cluster       │
+                   │    BGP session verification  │  │  • Node-to-peer consistency              │
+                   │  • FRR config drift recovery │  │  • Cloud drift recovery                  │
+                   │  • FRR pod restart recovery  │  │  • Deletion cleanup (cloud resources)    │
+                   │  • Deletion dependency check │  │  Skip when cloud creds not configured    │
+                   │  Requires external BGP peer  │  │                                          │
+                   └──────────────────────────────┘  └──────────────────────────────────────────┘
 ```
 
 ## Test Layers
 
-Two layers, ordered by infrastructure cost and feedback speed:
+Ordered by infrastructure cost:
 
-| Layer | What it validates | Speed | Infrastructure |
-|:---|:---|:---|:---|
-| Unit | Reconciliation logic, error handling, edge cases | ~30s | None (fake client + mocks) |
-| E2E | Full operator lifecycle on a real cluster with cloud infrastructure | ~10min | Cluster + cloud infra (Terraform) |
+| Layer | What it validates | Infrastructure |
+|:---|:---|:---|
+| Unit | Reconciliation logic, error handling, edge cases | None (fake client + mocks) |
+| Unit (provider) | Cloud API integration (mocked API clients) | None (mocked API clients) |
+| E2E | Operator lifecycle + BGP session verification on a real cluster | Cluster + external BGP peer |
+| E2E (provider) | Full operator lifecycle including cloud resource reconciliation | Cluster + cloud infra (Terraform) |
 
 ### Unit test structure
 
@@ -50,34 +52,31 @@ internal/
     cudnbgpconfig_controller_test.go   ← config controller (Phases 1-5, mocked CloudPlatform)
     cudnbgprouting_controller_test.go  ← routing controller
     helpers_test.go                    ← helpers (NS, CUDN, FRR, RouteAdvertisements)
-  platform/
+  platform/                            ← mocked at cloud SDK client level
     aws/
-      aws_test.go                      ← AWS platform (mocked EC2 client)
+      aws_test.go                      ← AWS platform (mocked EC2/STS clients)
 ```
 
 ### E2E test structure
 
 ```
 test/e2e/
-  e2e_suite_test.go
-  e2e_test.go                          ← shared (no tests currently defined)
+  e2e_suite_test.go                    ← shared suite setup (k8s client, profile loading)
+  e2e_test.go                          ← shared E2E tests (BGP session verification, drift recovery)
   aws/
-    aws_e2e_suite_test.go
-    aws_e2e_test.go                    ← AWS E2E (requires IRSA configured)
+    aws_e2e_suite_test.go              ← AWS suite setup (k8s client + EC2 client + discovery)
+    aws_e2e_test.go                    ← AWS E2E (requires AWS credential configured)
   manifests/
-    poc/                               ← PoC profile (CUDNBgpConfig + CUDNBgpRouting)
+    <profile>/                         ← per-cluster profile (CUDNBgpConfig + CUDNBgpRouting)
       cudnbgpconfig.yaml
       cudnbgprouting.yaml
 ```
 
-E2E tests read CR manifests from a profile directory under `test/e2e/manifests/<profile>/`. The test framework:
+E2E tests read CR manifests from a profile directory under `test/e2e/manifests/<profile>/`. Shared E2E tests use CRs without `spec.aws` (explicit `availabilityZones`); provider-specific tests require `spec.aws` (or equivalent).
 
-1. Deploys the operator
-2. Applies CRs from the selected profile directory
-3. Discovers expected state from the operator's `status.aws.routeServers` (auto-discovered endpoints) + listing cluster nodes
-4. Asserts relative outcomes (e.g., "peers per endpoint == router nodes in that AZ", "status.aws contains discovered endpoints for all Route Server IDs")
+**Shared E2E tests** validate behavior that only a real cluster with a live BGP peer can exercise — BGP session establishment, route advertisement, FRR config drift recovery, and cleanup. Unit tests cover the reconciliation logic itself; shared E2E tests verify the downstream effect on actual BGP sessions.
 
-Provider-independent E2E tests ignore `spec.aws` (or any provider section) in the CRs. Provider-specific tests use the full CR.
+**Provider-specific E2E tests** additionally verify cloud resource reconciliation (e.g., Route Server peers, SourceDestCheck for AWS).
 
 ### Make targets
 
@@ -85,7 +84,7 @@ Provider-independent E2E tests ignore `spec.aws` (or any provider section) in th
 |:---|:---|:---|
 | `make test` | Platform-independent unit tests (`internal/controller/`) | No |
 | `make test-aws` | AWS unit tests, mocked (`internal/platform/aws/`) | No |
-| `make test-e2e` | Shared E2E (operator starts) | No (just cluster) |
+| `make test-e2e <profile>` | Shared E2E (BGP session + drift recovery) | No (cluster + external BGP peer) |
 | `make test-e2e-aws <profile>` | AWS E2E tests (`test/e2e/aws/`), profile required | Yes (cluster + IRSA configured) |
 
 ## Platform Interface
@@ -114,7 +113,7 @@ type CloudPlatform interface {
 
 | Scope | Test plan | Status |
 |:---|:---|:---|
-| Platform-independent (controllers + helpers) | [docs/controller-test-plan.md](controller-test-plan.md) | Active |
+| Platform-independent (controllers + helpers + E2E) | [docs/controller-test-plan.md](controller-test-plan.md) | Active |
 | AWS | [docs/aws-integration-test-plan.md](aws-integration-test-plan.md) | Active |
 | GCP | `docs/gcp-integration-test-plan.md` | Future |
 | Azure | `docs/azure-integration-test-plan.md` | Future |
@@ -131,6 +130,7 @@ When the project moves to an OpenShift CI-managed repository, the following pipe
 | Layer | ci-operator type | Trigger |
 |:---|:---|:---|
 | Unit | Container test | Every PR (presubmit) |
-| E2E | Container test + cluster + cloud credentials | On demand (`/test e2e-aws <profile>`) |
+| E2E (shared) | Container test + cluster with BGP peer | On demand (`/test e2e <profile>`) |
+| E2E (AWS) | Container test + cluster + cloud credentials | On demand (`/test e2e-aws <profile>`) |
 
-The E2E job requires IRSA configured for the operator's ServiceAccount and a profile name specifying which CRs to apply.
+The shared E2E job requires a cluster with an external BGP peer and a profile with explicit `availabilityZones`. The AWS E2E job additionally requires IRSA configured for the operator's ServiceAccount.
