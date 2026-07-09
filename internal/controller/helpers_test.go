@@ -41,7 +41,7 @@ func testScheme() *runtime.Scheme {
 func TestValidateNamespaceLabels_Found(t *testing.T) {
 	existing := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "cudn1",
+			Name: "app1",
 			Labels: map[string]string{
 				LabelPrimaryUDN: "",
 				LabelCUDN:       "prod",

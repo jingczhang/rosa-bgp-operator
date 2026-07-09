@@ -5,7 +5,7 @@ metadata:
 spec:
   bgp:
     localASN: 65001
-    livenessDetection: bfd
+    livenessDetection: bgp-keepalive
 
   routerNodeSelector:
     bgp_router: "true"

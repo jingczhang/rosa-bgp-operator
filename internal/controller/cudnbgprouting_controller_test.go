@@ -86,7 +86,7 @@ func TestRoutingReconcile_FullReconcile(t *testing.T) {
 	config := newReadyCUDNBgpConfig()
 	ns := &corev1.Namespace{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: "cudn1",
+			Name: "app1",
 			Labels: map[string]string{
 				LabelPrimaryUDN: "",
 				LabelCUDN:       "prod",
@@ -293,5 +293,78 @@ func TestRoutingReconcile_DuplicateNetworkName(t *testing.T) {
 	_ = c.Get(context.Background(), types.NamespacedName{Name: "prod"}, updated)
 	if updated.Status.Phase != networkingv1alpha1.PhaseDegraded {
 		t.Errorf("expected Degraded, got %s", updated.Status.Phase)
+	}
+}
+
+func TestMapCUDNToRouting_ManagedCUDN(t *testing.T) {
+	routing := newTestCUDNBgpRouting()
+	s := routingTestScheme()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(routing).Build()
+	r := &CUDNBgpRoutingReconciler{Client: c, Scheme: s}
+
+	cudn := &unstructured.Unstructured{}
+	cudn.SetName(CUDNNamePrefix + "prod")
+	cudn.SetLabels(map[string]string{LabelManagedBy: LabelManagedByVal})
+
+	requests := r.mapCUDNToRouting(context.Background(), cudn)
+	if len(requests) != 1 {
+		t.Fatalf("expected 1 request, got %d", len(requests))
+	}
+	if requests[0].Name != "prod" {
+		t.Errorf("expected request for 'prod', got %q", requests[0].Name)
+	}
+}
+
+func TestMapCUDNToRouting_UnmanagedCUDN(t *testing.T) {
+	routing := newTestCUDNBgpRouting()
+	s := routingTestScheme()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(routing).Build()
+	r := &CUDNBgpRoutingReconciler{Client: c, Scheme: s}
+
+	cudn := &unstructured.Unstructured{}
+	cudn.SetName(CUDNNamePrefix + "prod")
+	cudn.SetLabels(map[string]string{"other": "label"})
+
+	requests := r.mapCUDNToRouting(context.Background(), cudn)
+	if len(requests) != 0 {
+		t.Errorf("expected 0 requests for unmanaged CUDN, got %d", len(requests))
+	}
+}
+
+func TestMapRAToRouting_ManagedRA(t *testing.T) {
+	routing1 := newTestCUDNBgpRouting()
+	routing2 := &networkingv1alpha1.CUDNBgpRouting{
+		ObjectMeta: metav1.ObjectMeta{Name: "staging"},
+		Spec: networkingv1alpha1.CUDNBgpRoutingSpec{
+			Network: networkingv1alpha1.NetworkConfig{Name: "staging", Subnet: "10.200.0.0/16"},
+		},
+	}
+	s := routingTestScheme()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(routing1, routing2).Build()
+	r := &CUDNBgpRoutingReconciler{Client: c, Scheme: s}
+
+	ra := &unstructured.Unstructured{}
+	ra.SetName(RouteAdvertisementName)
+	ra.SetLabels(map[string]string{LabelManagedBy: LabelManagedByVal})
+
+	requests := r.mapRAToRouting(context.Background(), ra)
+	if len(requests) != 2 {
+		t.Fatalf("expected 2 requests, got %d", len(requests))
+	}
+}
+
+func TestMapRAToRouting_UnmanagedRA(t *testing.T) {
+	routing := newTestCUDNBgpRouting()
+	s := routingTestScheme()
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(routing).Build()
+	r := &CUDNBgpRoutingReconciler{Client: c, Scheme: s}
+
+	ra := &unstructured.Unstructured{}
+	ra.SetName("some-other-ra")
+	ra.SetLabels(map[string]string{})
+
+	requests := r.mapRAToRouting(context.Background(), ra)
+	if len(requests) != 0 {
+		t.Errorf("expected 0 requests for unmanaged RA, got %d", len(requests))
 	}
 }

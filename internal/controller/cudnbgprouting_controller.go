@@ -19,16 +19,20 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	networkingv1alpha1 "github.com/openshift/cudn-bgp-routing-operator/api/v1alpha1"
 )
@@ -202,8 +206,52 @@ func (r *CUDNBgpRoutingReconciler) setDegraded(
 }
 
 func (r *CUDNBgpRoutingReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	cudn := &unstructured.Unstructured{}
+	cudn.SetGroupVersionKind(CUDNNetworkGVK)
+
+	ra := &unstructured.Unstructured{}
+	ra.SetGroupVersionKind(RouteAdvertisementsGVK)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&networkingv1alpha1.CUDNBgpRouting{}).
+		Watches(cudn, handler.EnqueueRequestsFromMapFunc(
+			r.mapCUDNToRouting,
+		)).
+		Watches(ra, handler.EnqueueRequestsFromMapFunc(
+			r.mapRAToRouting,
+		)).
 		Named("cudnbgprouting").
 		Complete(r)
+}
+
+func (r *CUDNBgpRoutingReconciler) mapCUDNToRouting(ctx context.Context, obj client.Object) []reconcile.Request {
+	if obj.GetLabels()[LabelManagedBy] != LabelManagedByVal {
+		return nil
+	}
+	networkName := strings.TrimPrefix(obj.GetName(), CUDNNamePrefix)
+	routingList := &networkingv1alpha1.CUDNBgpRoutingList{}
+	if err := r.List(ctx, routingList); err != nil {
+		return nil
+	}
+	for _, rt := range routingList.Items {
+		if rt.Spec.Network.Name == networkName {
+			return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: rt.Name}}}
+		}
+	}
+	return nil
+}
+
+func (r *CUDNBgpRoutingReconciler) mapRAToRouting(ctx context.Context, obj client.Object) []reconcile.Request {
+	if obj.GetLabels()[LabelManagedBy] != LabelManagedByVal {
+		return nil
+	}
+	routingList := &networkingv1alpha1.CUDNBgpRoutingList{}
+	if err := r.List(ctx, routingList); err != nil {
+		return nil
+	}
+	requests := make([]reconcile.Request, 0, len(routingList.Items))
+	for _, rt := range routingList.Items {
+		requests = append(requests, reconcile.Request{NamespacedName: types.NamespacedName{Name: rt.Name}})
+	}
+	return requests
 }

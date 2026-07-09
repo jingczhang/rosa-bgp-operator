@@ -17,13 +17,147 @@ limitations under the License.
 package e2e
 
 import (
+	"bytes"
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/yaml"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/tools/clientcmd"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+
+	networkingv1alpha1 "github.com/openshift/cudn-bgp-routing-operator/api/v1alpha1"
+)
+
+const (
+	frrNamespace        = "openshift-frr-k8s"
+	frrConfigNamePrefix = "cudn-bgp-az-"
+	labelManagedBy      = "app.kubernetes.io/managed-by"
+	labelManagedByVal   = "cudn-bgp-routing-operator"
+	labelPrimaryUDN     = "k8s.ovn.org/primary-user-defined-network"
+	labelCUDN           = "cluster-udn"
+	raName              = "cudn-bgp-route-advertisements"
+)
+
+var (
+	k8sClient  client.Client
+	bgpConfig  *networkingv1alpha1.CUDNBgpConfig
+	bgpRouting *networkingv1alpha1.CUDNBgpRouting
+)
+
+var (
+	bgpSessionStateGVK = schema.GroupVersionKind{
+		Group: "frrk8s.metallb.io", Version: "v1beta1", Kind: "BGPSessionState",
+	}
+	frrConfigurationGVK = schema.GroupVersionKind{
+		Group: "frrk8s.metallb.io", Version: "v1beta1", Kind: "FRRConfiguration",
+	}
+	cudnGVK = schema.GroupVersionKind{
+		Group: "k8s.ovn.org", Version: "v1", Kind: "ClusterUserDefinedNetwork",
+	}
+	raGVK = schema.GroupVersionKind{
+		Group: "k8s.ovn.org", Version: "v1", Kind: "RouteAdvertisements",
+	}
+	frrNodeStateGVK = schema.GroupVersionKind{
+		Group: "frrk8s.metallb.io", Version: "v1beta1", Kind: "FRRNodeState",
+	}
 )
 
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
 	RunSpecs(t, "E2E Suite")
+}
+
+var _ = BeforeSuite(func() {
+	profile := os.Getenv("E2E_PROFILE")
+	Expect(profile).NotTo(BeEmpty(), "E2E_PROFILE must be set (e.g. make test-e2e my-cluster)")
+	manifestDir := filepath.Join("..", "..", "test", "e2e", "manifests", profile)
+
+	By("loading CUDNBgpConfig manifest from profile " + profile)
+	bgpConfig = &networkingv1alpha1.CUDNBgpConfig{}
+	loadManifest(filepath.Join(manifestDir, "cudnbgpconfig.yaml"), bgpConfig)
+	Expect(bgpConfig.Spec.AWS).To(BeNil(), "shared E2E profile must not have spec.aws")
+	Expect(bgpConfig.Spec.BGP.AvailabilityZones).NotTo(BeEmpty(),
+		"shared E2E profile must have spec.bgp.availabilityZones")
+
+	By("loading CUDNBgpRouting manifest from profile " + profile)
+	bgpRouting = &networkingv1alpha1.CUDNBgpRouting{}
+	loadManifest(filepath.Join(manifestDir, "cudnbgprouting.yaml"), bgpRouting)
+
+	By("building kubernetes client")
+	scheme := runtime.NewScheme()
+	Expect(clientgoscheme.AddToScheme(scheme)).To(Succeed())
+	Expect(networkingv1alpha1.AddToScheme(scheme)).To(Succeed())
+	addUnstructuredTypes(scheme)
+
+	rules := clientcmd.NewDefaultClientConfigLoadingRules()
+	restCfg, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
+		rules, &clientcmd.ConfigOverrides{},
+	).ClientConfig()
+	Expect(err).NotTo(HaveOccurred())
+	k8sClient, err = client.New(restCfg, client.Options{Scheme: scheme})
+	Expect(err).NotTo(HaveOccurred())
+
+	By("checking for pre-existing state that would conflict with tests")
+	ctx := context.Background()
+	config := &networkingv1alpha1.CUDNBgpConfig{}
+	Expect(client.IgnoreNotFound(
+		k8sClient.Get(ctx, types.NamespacedName{Name: bgpConfig.Name}, config),
+	)).To(Succeed())
+	Expect(config.Name).To(BeEmpty(),
+		"CUDNBgpConfig %q already exists — delete it before running E2E tests", bgpConfig.Name)
+
+	routing := &networkingv1alpha1.CUDNBgpRouting{}
+	Expect(client.IgnoreNotFound(
+		k8sClient.Get(ctx, types.NamespacedName{Name: bgpRouting.Name}, routing),
+	)).To(Succeed())
+	Expect(routing.Name).To(BeEmpty(),
+		"CUDNBgpRouting %q already exists — delete it before running E2E tests", bgpRouting.Name)
+
+	ns := &corev1.Namespace{}
+	Expect(client.IgnoreNotFound(
+		k8sClient.Get(ctx, types.NamespacedName{Name: "app1"}, ns),
+	)).To(Succeed())
+	Expect(ns.Name).To(BeEmpty(),
+		"namespace app1 already exists — delete it before running E2E tests")
+})
+
+func loadManifest(path string, obj runtime.Object) {
+	data, err := os.ReadFile(path)
+	Expect(err).NotTo(HaveOccurred(), "reading manifest %s", path)
+	Expect(yaml.NewYAMLOrJSONDecoder(
+		bytes.NewReader(data), 4096,
+	).Decode(obj)).To(Succeed(), "decoding manifest %s", path)
+}
+
+func addUnstructuredTypes(s *runtime.Scheme) {
+	for _, gvk := range []schema.GroupVersionKind{
+		frrConfigurationGVK,
+		cudnGVK,
+		raGVK,
+		bgpSessionStateGVK,
+		frrNodeStateGVK,
+	} {
+		s.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
+		s.AddKnownTypeWithName(gvk.GroupVersion().WithKind(gvk.Kind+"List"), &unstructured.UnstructuredList{})
+	}
+}
+
+func routerNodes(ctx context.Context) ([]corev1.Node, error) {
+	nodeList := &corev1.NodeList{}
+	if err := k8sClient.List(ctx, nodeList,
+		client.MatchingLabels(bgpConfig.Spec.RouterNodeSelector)); err != nil {
+		return nil, err
+	}
+	return nodeList.Items, nil
 }

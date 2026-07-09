@@ -392,6 +392,9 @@ func nodeRelevantChangePredicate() predicate.Predicate {
 }
 
 func (r *CUDNBgpConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	frrCfg := &unstructured.Unstructured{}
+	frrCfg.SetGroupVersionKind(FRRConfigurationGVK)
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&networkingv1alpha1.CUDNBgpConfig{}).
 		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(
@@ -399,6 +402,14 @@ func (r *CUDNBgpConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 				return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: SingletonName}}}
 			},
 		), builder.WithPredicates(nodeRelevantChangePredicate())).
+		Watches(frrCfg, handler.EnqueueRequestsFromMapFunc(
+			func(_ context.Context, obj client.Object) []reconcile.Request {
+				if obj.GetLabels()[LabelManagedBy] != LabelManagedByVal {
+					return nil
+				}
+				return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: SingletonName}}}
+			},
+		)).
 		Named("cudnbgpconfig").
 		Complete(r)
 }
