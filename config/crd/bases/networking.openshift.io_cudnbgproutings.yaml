@@ -53,11 +53,15 @@ spec:
                 properties:
                   name:
                     type: string
-                  subnet:
-                    type: string
+                  subnets:
+                    items:
+                      type: string
+                    maxItems: 2
+                    minItems: 1
+                    type: array
                 required:
                 - name
-                - subnet
+                - subnets
                 type: object
             required:
             - network

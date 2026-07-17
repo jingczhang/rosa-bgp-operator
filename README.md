@@ -12,6 +12,7 @@ The operator is **cloud platform aware**. When platform configuration is provide
 - [Controller Reconciliation](#controller-reconciliation)
 - [Development](#development)
 - [Automated Testing](#automated-testing)
+- [KubeVirt VM Testing](#kubevirt-vm-testing)
 
 ---
 
@@ -278,8 +279,26 @@ metadata:
 spec:
   network:
     name: prod                       # CUDN selects namespaces with label cluster-udn=prod
-    subnet: 10.100.0.0/16
+    subnets:
+      - 10.100.0.0/16
 ```
+
+For dual-stack networks, specify both an IPv4 and an IPv6 subnet:
+
+```yaml
+apiVersion: networking.openshift.io/v1alpha1
+kind: CUDNBgpRouting
+metadata:
+  name: cudn1
+spec:
+  network:
+    name: prod
+    subnets:
+      - 10.100.0.0/16
+      - 2001:db8::/64
+```
+
+> **IPv6 limitation (OCP 4.21):** OVN-Kubernetes requires an IPv6 underlay (i.e. IPv6-addressed nodes) to advertise IPv6 pod subnets via BGP. On IPv4-only clusters, dual-stack CUDNs can be created but IPv6 routes will not be advertised. This is an OVN-Kubernetes limitation, not this operator limitation.
 
 ### CRD field reference
 
@@ -315,7 +334,7 @@ spec:
 | Field | Required | Description |
 |:---|:---|:---|
 | `spec.network.name` | Yes | Identifies the CUDN network. The operator creates a ClusterUserDefinedNetwork named `cluster-udn-<name>` that selects namespaces with label `cluster-udn: <name>`. Users must pre-create and label namespaces. |
-| `spec.network.subnet` | Yes | CIDR for the CUDN pod network. The operator hardcodes `topology: Layer2`, `role: Primary`, and `ipam.lifecycle: Persistent` on the generated CUDN. |
+| `spec.network.subnets[]` | Yes | CIDRs for the CUDN pod network (1 or 2 entries for single-stack or dual-stack). The operator hardcodes `topology: Layer2`, `role: Primary`, and `ipam.lifecycle: Persistent` on the generated CUDN. |
 
 ### Operator-generated resources
 
@@ -573,7 +592,7 @@ Phase 1: Validate Namespace + Create CUDN
   │   (if no matching namespace found → Degraded with reason NamespaceNotReady)
   ├── Create ClusterUserDefinedNetwork with:
   │   namespaceSelector matching cluster-udn: <spec.network.name>
-  │   subnet from spec.network
+  │   subnets from spec.network
   │   topology: Layer2, role: Primary, ipam.lifecycle: Persistent (hardcoded)
   │   label advertise: "true"
   └── Condition: CUDNCreated
@@ -786,3 +805,28 @@ make undeploy
 E2E tests read CR manifests from `test/e2e/manifests/<profile>/` and require a profile name. Shared E2E tests use CRs with explicit `availabilityZones` (no `spec.aws`); AWS E2E tests require `spec.aws`. To test your own cluster, create a profile directory with your CRs.
 
 For full details see [docs/test-strategy.md](docs/test-strategy.md).
+
+---
+
+## KubeVirt VM Testing
+
+KubeVirt VMIs in UDN-enabled namespaces **must** use `bridge` binding, not `masquerade`.
+
+The `masquerade` binding installs nftables rules in the virt-launcher pod that drop inbound traffic on UDN interfaces (`ovn-udn1`). This blocks both IPv4 and IPv6 connectivity to the VM from other pods and external hosts.
+
+```yaml
+spec:
+  domain:
+    devices:
+      interfaces:
+        - name: default
+          bridge: {}
+  networks:
+    - name: default
+      pod: {}
+```
+
+| Binding | Inbound to VM (UDN) | Outbound from VM |
+|---------|---------------------|------------------|
+| masquerade | Blocked by nftables | Works |
+| bridge | Works | Works |

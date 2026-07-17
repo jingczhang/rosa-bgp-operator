@@ -7,3 +7,4 @@ spec:
     name: prod
     subnets:
       - 10.100.0.0/16
+      - 2001:db8::/64

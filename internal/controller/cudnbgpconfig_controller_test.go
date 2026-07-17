@@ -150,7 +150,7 @@ func TestConfigReconcile_DeleteBlockedByRouting(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "prod"},
 		Spec: networkingv1alpha1.CUDNBgpRoutingSpec{
 			Network: networkingv1alpha1.NetworkConfig{
-				Name: "prod", Subnet: "10.100.0.0/16",
+				Name: "prod", Subnets: []string{"10.100.0.0/16"},
 			},
 		},
 	}

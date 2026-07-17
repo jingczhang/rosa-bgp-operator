@@ -18,4 +18,5 @@ metadata:
 spec:
   network:
     name: prod                       # CUDN selects namespaces with label cluster-udn=prod
-    subnet: 10.100.0.0/16
+    subnets:
+      - 10.100.0.0/16

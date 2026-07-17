@@ -72,7 +72,7 @@ func EnsureCUDN(ctx context.Context, c client.Client, routing *networkingv1alpha
 						"ipam": map[string]interface{}{
 							"lifecycle": "Persistent",
 						},
-						"subnets": []interface{}{routing.Spec.Network.Subnet},
+						"subnets": toSubnetInterfaces(routing.Spec.Network.Subnets),
 					},
 				},
 			},
@@ -91,4 +91,12 @@ func DeleteCUDN(ctx context.Context, c client.Client, networkName string) error 
 		return err
 	}
 	return nil
+}
+
+func toSubnetInterfaces(subnets []string) []interface{} {
+	out := make([]interface{}, len(subnets))
+	for i, s := range subnets {
+		out[i] = s
+	}
+	return out
 }

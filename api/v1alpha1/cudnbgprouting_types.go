@@ -26,8 +26,10 @@ const (
 )
 
 type NetworkConfig struct {
-	Name   string `json:"name"`
-	Subnet string `json:"subnet"`
+	Name string `json:"name"`
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=2
+	Subnets []string `json:"subnets"`
 }
 
 type CUDNBgpRoutingSpec struct {
