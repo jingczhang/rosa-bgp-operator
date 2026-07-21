@@ -107,7 +107,9 @@ var _ = Describe("E2E", Ordered, func() {
 			assertBGPEstablished(ctx)
 
 			By("verifying CUDN subnets appear in FRR advertised routes")
-			assertSubnetAdvertised(ctx, bgpRouting.Spec.Network.Subnet)
+			for _, subnet := range bgpRouting.Spec.Network.Subnets {
+				assertSubnetAdvertised(ctx, subnet)
+			}
 		})
 	})
 

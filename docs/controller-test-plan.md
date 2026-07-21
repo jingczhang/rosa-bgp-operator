@@ -25,6 +25,7 @@ Tests for the CUDN BGP Routing Operator controllers and helpers. Unit tests are 
 | Router node selector | `bgp_router: "true"` |
 | Availability Zones | 1 (minimal for unit tests) |
 | Neighbor addresses | `10.0.1.47`, `10.0.1.183` |
+| CUDN subnets | `10.100.0.0/16` |
 
 **Platform interface tests** use `spec.aws` set with a mocked `CloudPlatform` interface. The mock returns a `DiscoveryResult` with 1 Route Server, 1 endpoint (`rse-001` in `us-east-1a`, address `10.0.1.47`, remote ASN `64512`). No real AWS credentials required.
 

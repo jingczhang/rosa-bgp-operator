@@ -10,6 +10,8 @@ spec:
       - neighbors:
           - address: 100.72.142.4
             remoteASN: 64501
+          - address: 2a00:8a00:4000:780::4
+            remoteASN: 64501
         nodeSelector: {}
 
   routerNodeSelector:

@@ -52,8 +52,8 @@ func newTestCUDNBgpRouting() *networkingv1alpha1.CUDNBgpRouting {
 		},
 		Spec: networkingv1alpha1.CUDNBgpRoutingSpec{
 			Network: networkingv1alpha1.NetworkConfig{
-				Name:   "prod",
-				Subnet: "10.100.0.0/16",
+				Name:    "prod",
+				Subnets: []string{"10.100.0.0/16"},
 			},
 		},
 	}
@@ -221,7 +221,7 @@ func TestRoutingReconcile_DeleteKeepsRAWhenOthersExist(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "staging"},
 		Spec: networkingv1alpha1.CUDNBgpRoutingSpec{
 			Network: networkingv1alpha1.NetworkConfig{
-				Name: "staging", Subnet: "10.200.0.0/16",
+				Name: "staging", Subnets: []string{"10.200.0.0/16"},
 			},
 		},
 	}
@@ -264,7 +264,7 @@ func TestRoutingReconcile_DuplicateNetworkName(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "existing-prod"},
 		Spec: networkingv1alpha1.CUDNBgpRoutingSpec{
 			Network: networkingv1alpha1.NetworkConfig{
-				Name: "prod", Subnet: "10.100.0.0/16",
+				Name: "prod", Subnets: []string{"10.100.0.0/16"},
 			},
 		},
 	}
@@ -336,7 +336,7 @@ func TestMapRAToRouting_ManagedRA(t *testing.T) {
 	routing2 := &networkingv1alpha1.CUDNBgpRouting{
 		ObjectMeta: metav1.ObjectMeta{Name: "staging"},
 		Spec: networkingv1alpha1.CUDNBgpRoutingSpec{
-			Network: networkingv1alpha1.NetworkConfig{Name: "staging", Subnet: "10.200.0.0/16"},
+			Network: networkingv1alpha1.NetworkConfig{Name: "staging", Subnets: []string{"10.200.0.0/16"}},
 		},
 	}
 	s := routingTestScheme()
