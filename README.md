@@ -814,6 +814,8 @@ KubeVirt VMIs in UDN-enabled namespaces **must** use `bridge` binding, not `masq
 
 The `masquerade` binding installs nftables rules in the virt-launcher pod that drop inbound traffic on UDN interfaces (`ovn-udn1`). This blocks both IPv4 and IPv6 connectivity to the VM from other pods and external hosts.
 
+VM spec (relevant sections):
+
 ```yaml
 spec:
   domain:
@@ -830,3 +832,5 @@ spec:
 |---------|---------------------|------------------|
 | masquerade | Blocked by nftables | Works |
 | bridge | Works | Works |
+
+For VM migration test using Migration Toolkit for Virtualization (MTV) see [docs/test-mtv-cudn.md](docs/test-mtv-cudn.md).
