@@ -148,7 +148,7 @@ make test
 
 # E2E tests (requires cluster with external BGP peer)
 # Prerequisites:
-# - oc login to OCP 4.18+ cluster with an external BGP peer
+# - oc login to OCP 4.21+ cluster with an external BGP peer
 # - Operator deployed to the cluster
 # - A profile with CUDNBgpConfig using explicit availabilityZones (no spec.aws)
 make test-e2e <profile>

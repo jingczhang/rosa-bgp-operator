@@ -187,12 +187,14 @@ Currently only AWS platform integration is implemented but the design allows for
 | Default channel | `alpha` (moves to `stable` at GA) |
 | Install modes | OwnNamespace, SingleNamespace |
 | Target namespace | `openshift-cudn-bgp-routing` |
-| Min OCP version | 4.18 (frr-k8s + CUDN support) |
+| Min OCP version | 4.21 (frr-k8s + CUDN + RouteAdvertisements) |
 | Categories | Networking |
 | Provider | Red Hat |
 
-**Required APIs:** `FRRConfiguration` (frrk8s.metallb.io/v1beta1), `ClusterUserDefinedNetwork` (k8s.ovn.org/v1)
+**Required APIs:** `FRRConfiguration` (frrk8s.metallb.io/v1beta1), `ClusterUserDefinedNetwork` (k8s.ovn.org/v1), `RouteAdvertisements` (k8s.ovn.org/v1)
 **Owned APIs:** `CUDNBgpConfig`, `CUDNBgpRouting` (networking.openshift.io/v1alpha1)
+
+> The operator constructs `ClusterUserDefinedNetwork`, `RouteAdvertisements`, and `FRRConfiguration` objects using `unstructured.Unstructured` rather than importing typed Go structs. The typed structs for CUDN and RouteAdvertisements live inside the monolithic `github.com/ovn-kubernetes/ovn-kubernetes/go-controller` module, which carries 100+ transitive dependencies (CNI plugins, netlink, kubevirt, the full `k8s.io/kubernetes` repo, etc.). Even `openshift/cluster-network-operator` avoids importing it for the same reason.
 
 ---
 
@@ -449,7 +451,7 @@ spec:
                 mode: all
 ```
 
-> **Note on `disableMP: true`:** The frr-k8s CRD defaults `disableMP` to `false` when the field is omitted. The **OVN-Kubernetes RouteAdvertisements controller** (as of OCP 4.21) validates it and rejects FRRConfigurations where `disableMP` is `false`. The operator therefore explicitly sets `disableMP: true` on every neighbor.
+> **Note on `disableMP: true`:** The frr-k8s CRD defaults `disableMP` to `false` when the field is omitted. The OVN-Kubernetes RouteAdvertisements controller validates it and rejects FRRConfigurations where `disableMP` is `false`. The operator therefore explicitly sets `disableMP: true` on every neighbor.
 
 Users must pre-create namespaces with the required labels before applying a CUDNBgpRouting CR. The `k8s.ovn.org/primary-user-defined-network` label must be set at creation time — OCP admission policy prevents adding it after the namespace exists.
 
@@ -674,7 +676,7 @@ oc get cudnbgprouting cudn1 -o jsonpath='{.status.conditions}' | jq .
 
 - Go 1.24+ installed locally. Some of the build happens outside of a container.
 - operator-sdk v1.42+
-- `oc` CLI logged into an OCP 4.18+ cluster
+- `oc` CLI logged into an OCP 4.21+ cluster
 - Podman (for image builds only)
 
 ### Clone the repo
@@ -686,7 +688,7 @@ cd rosa-bgp-operator
 
 ### Deploy and test
 
-The operator can be tested on any OCP 4.18+ cluster with an external BGP router — with or without cloud integration.
+The operator can be tested on any OCP 4.21+ cluster with an external BGP router — with or without cloud integration.
 
 1. Ensure the internal image registry is enabled and exposed.
 
