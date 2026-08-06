@@ -194,6 +194,8 @@ Currently only AWS platform integration is implemented but the design allows for
 **Required APIs:** `FRRConfiguration` (frrk8s.metallb.io/v1beta1), `ClusterUserDefinedNetwork` (k8s.ovn.org/v1), `RouteAdvertisements` (k8s.ovn.org/v1)
 **Owned APIs:** `CUDNBgpConfig`, `CUDNBgpRouting` (networking.openshift.io/v1alpha1)
 
+> **Greenfield note:** `FRRConfiguration` and `RouteAdvertisements` only exist after CNO has FRR + `routeAdvertisements` enabled. `CUDNBgpConfig` Phase 1 patches `Network.operator` for that. Watches for those GVKs are registered only when the APIs are already present at manager startup (otherwise the manager would CrashLoop before the patch can run — see [issue #7](https://github.com/jingczhang/rosa-bgp-operator/issues/7)). Progress then relies on reconcile requeue until the CRDs appear.
+
 > The operator constructs `ClusterUserDefinedNetwork`, `RouteAdvertisements`, and `FRRConfiguration` objects using `unstructured.Unstructured` rather than importing typed Go structs. The typed structs for CUDN and RouteAdvertisements live inside the monolithic `github.com/ovn-kubernetes/ovn-kubernetes/go-controller` module, which carries 100+ transitive dependencies (CNI plugins, netlink, kubevirt, the full `k8s.io/kubernetes` repo, etc.). Even `openshift/cluster-network-operator` avoids importing it for the same reason.
 
 ---

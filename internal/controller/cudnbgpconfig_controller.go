@@ -392,24 +392,33 @@ func nodeRelevantChangePredicate() predicate.Predicate {
 }
 
 func (r *CUDNBgpConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	frrCfg := &unstructured.Unstructured{}
-	frrCfg.SetGroupVersionKind(FRRConfigurationGVK)
+	log := logf.Log.WithName("cudnbgpconfig-setup")
 
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&networkingv1alpha1.CUDNBgpConfig{}).
 		Watches(&corev1.Node{}, handler.EnqueueRequestsFromMapFunc(
 			func(_ context.Context, _ client.Object) []reconcile.Request {
 				return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: SingletonName}}}
 			},
-		), builder.WithPredicates(nodeRelevantChangePredicate())).
-		Watches(frrCfg, handler.EnqueueRequestsFromMapFunc(
+		), builder.WithPredicates(nodeRelevantChangePredicate()))
+
+	// FRRConfiguration CRDs only exist after Network.operator is patched (Phase 1).
+	// Skip the watch on greenfield so the manager can start and perform that patch.
+	// Reconcile requeues cover progress until CRDs exist; restart to attach the watch.
+	if isGVKAvailable(mgr.GetRESTMapper(), FRRConfigurationGVK) {
+		frrCfg := &unstructured.Unstructured{}
+		frrCfg.SetGroupVersionKind(FRRConfigurationGVK)
+		b = b.Watches(frrCfg, handler.EnqueueRequestsFromMapFunc(
 			func(_ context.Context, obj client.Object) []reconcile.Request {
 				if obj.GetLabels()[LabelManagedBy] != LabelManagedByVal {
 					return nil
 				}
 				return []reconcile.Request{{NamespacedName: types.NamespacedName{Name: SingletonName}}}
 			},
-		)).
-		Named("cudnbgpconfig").
-		Complete(r)
+		))
+	} else {
+		log.Info("FRRConfiguration API not available yet; skipping watch (will rely on requeue until CRDs exist)")
+	}
+
+	return b.Named("cudnbgpconfig").Complete(r)
 }

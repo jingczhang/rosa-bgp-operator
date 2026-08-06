@@ -206,22 +206,35 @@ func (r *CUDNBgpRoutingReconciler) setDegraded(
 }
 
 func (r *CUDNBgpRoutingReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	cudn := &unstructured.Unstructured{}
-	cudn.SetGroupVersionKind(CUDNNetworkGVK)
+	log := logf.Log.WithName("cudnbgprouting-setup")
+	mapper := mgr.GetRESTMapper()
 
-	ra := &unstructured.Unstructured{}
-	ra.SetGroupVersionKind(RouteAdvertisementsGVK)
+	b := ctrl.NewControllerManagedBy(mgr).
+		For(&networkingv1alpha1.CUDNBgpRouting{})
 
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&networkingv1alpha1.CUDNBgpRouting{}).
-		Watches(cudn, handler.EnqueueRequestsFromMapFunc(
+	if isGVKAvailable(mapper, CUDNNetworkGVK) {
+		cudn := &unstructured.Unstructured{}
+		cudn.SetGroupVersionKind(CUDNNetworkGVK)
+		b = b.Watches(cudn, handler.EnqueueRequestsFromMapFunc(
 			r.mapCUDNToRouting,
-		)).
-		Watches(ra, handler.EnqueueRequestsFromMapFunc(
+		))
+	} else {
+		log.Info("ClusterUserDefinedNetwork API not available yet; skipping watch")
+	}
+
+	// RouteAdvertisements CRDs only exist after Network.operator enables routeAdvertisements.
+	// Skip on greenfield so the manager can start; CUDNBgpConfig Phase 1 patches CNO.
+	if isGVKAvailable(mapper, RouteAdvertisementsGVK) {
+		ra := &unstructured.Unstructured{}
+		ra.SetGroupVersionKind(RouteAdvertisementsGVK)
+		b = b.Watches(ra, handler.EnqueueRequestsFromMapFunc(
 			r.mapRAToRouting,
-		)).
-		Named("cudnbgprouting").
-		Complete(r)
+		))
+	} else {
+		log.Info("RouteAdvertisements API not available yet; skipping watch (will rely on requeue until CRDs exist)")
+	}
+
+	return b.Named("cudnbgprouting").Complete(r)
 }
 
 func (r *CUDNBgpRoutingReconciler) mapCUDNToRouting(ctx context.Context, obj client.Object) []reconcile.Request {
